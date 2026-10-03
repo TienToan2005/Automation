@@ -1,0 +1,20 @@
+{
+  "project_name": "T-PHONE E-commerce",
+  "urls": {
+    "login": "http://localhost:5173/login", 
+    "dashboard_indicator": "text=TienToan" 
+  },
+  "locators": {
+    "login": {
+      "open_login_modal_btn": "a[href='/login']",
+      "username": "input[placeholder='Nhập số điện thoại/email']", 
+      "password": "input[type='password']",
+      "submit_btn": "button[type='submit']"
+    },
+    "logout": {
+      "user_menu_btn": "text=Tài khoản", 
+      "submit_btn": "text=Đăng xuất"
+    }
+  }
+}
+
