@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: iot
+    folder: IoT Lab 2
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
