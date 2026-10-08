@@ -3,3 +3,6 @@ insightface
 onnxruntime
 numpy
 requests
+fastapi
+uvicorn
+pydantic
