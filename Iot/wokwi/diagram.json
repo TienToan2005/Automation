@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "author": "access-control",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-s3-devkitc-1", "id": "esp", "top": -80, "left": 0, "attrs": {} },
+    { "type": "board-ssd1306", "id": "oled", "top": -150, "left": -190, "attrs": { "i2cAddress": "0x3c" } },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_exit",
+      "top": 15.8,
+      "left": -144,
+      "attrs": { "color": "blue", "label": "Nut mo cua trong" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_bad",
+      "top": 73.4,
+      "left": -278.4,
+      "attrs": { "color": "red", "label": "Mat la" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_ok",
+      "top": 207.8,
+      "left": -192,
+      "attrs": { "color": "green", "label": "Mat hop le" }
+    },
+    { "type": "wokwi-pir-motion-sensor", "id": "pir", "top": 130, "left": 330, "rotate": 180, "attrs": {} },
+    { "type": "wokwi-relay-module", "id": "relay", "top": 326.6, "left": 19.2, "attrs": {} },
+    { "type": "wokwi-resistor", "id": "r_lock", "top": 378.35, "left": 268.8, "attrs": { "value": "330" } },
+    {
+      "type": "wokwi-led",
+      "id": "lock",
+      "top": 188.4,
+      "left": 234.2,
+      "attrs": { "color": "yellow", "label": "Khoa 12V" }
+    },
+    { "type": "wokwi-membrane-keypad", "id": "keypad", "top": -520, "left": 45, "attrs": {} }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "oled:VCC", "esp:3V3", "red", [ "v-30", "h130", "v130" ] ],
+    [ "oled:SCL", "esp:8", "blue", [ "v-25", "h110", "v230" ] ],
+    [ "oled:SDA", "esp:3", "green", [ "v-20", "h90", "v235" ] ],
+    [ "oled:GND", "btn_exit:2.l", "black", [ "v-20", "h-68.97", "v211.34" ] ],
+    [ "btn_exit:1.r", "esp:9", "blue", [ "h19.4", "v54.58" ] ],
+    [ "btn_bad:1.r", "esp:10", "red", [ "h45", "v-27" ] ],
+    [ "btn_ok:1.r", "esp:11", "green", [ "h60", "v-57" ] ],
+    [ "btn_bad:2.l", "btn_ok:2.l", "black", [ "v0.2", "h-57.6", "v134.2" ] ],
+    [ "keypad:R1", "esp:1", "green", [ "v199" ] ],
+    [ "keypad:R2", "esp:2", "green", [ "v208" ] ],
+    [ "keypad:R3", "esp:42", "green", [ "v218" ] ],
+    [ "keypad:R4", "esp:41", "green", [ "v228" ] ],
+    [ "keypad:C1", "esp:40", "orange", [ "v237" ] ],
+    [ "keypad:C2", "esp:39", "orange", [ "v247" ] ],
+    [ "keypad:C3", "esp:38", "orange", [ "v256" ] ],
+    [ "keypad:C4", "esp:37", "orange", [ "v266" ] ],
+    [ "btn_ok:2.r", "esp:GND.1", "black", [ "v0.2", "h29", "v-89.42" ] ],
+    [ "esp:13", "relay:IN", "purple", [ "h-45", "v159" ] ],
+    [ "esp:5V", "relay:VCC", "red", [ "h-30", "v120" ] ],
+    [ "relay:COM", "esp:5V", "red", [ "h39.6", "v-215.62" ] ],
+    [ "relay:NO", "r_lock:1", "yellow", [ "v17.4", "h135.6" ] ],
+    [ "r_lock:2", "lock:A", "yellow", [ "h8.4", "v-153.6" ] ],
+    [ "pir:OUT", "esp:47", "green", [ "v-36" ] ],
+    [ "pir:VCC", "relay:COM", "red", [ "h56.78", "v226.6" ] ],
+    [ "pir:GND", "lock:C", "black", [ "h-20", "v-5.2", "h-134.16", "v105.6" ] ],
+    [ "btn_bad:2.r", "btn_exit:2.r", "green", [ "h0" ] ],
+    [ "lock:C", "relay:GND", "black", [ "h-38", "v30", "h-201.6", "v95.2" ] ],
+    [ "esp:GND.1", "relay:GND", "black", [ "h-14.68", "v205.02" ] ]
+  ],
+  "dependencies": {}
+}
