@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Nhật ký ra vào{% endblock %}
+{% block content %}
+<h1>{{ 'Nhật ký ra vào' if user.role == 'admin' else 'Lịch sử ra vào của tôi' }}</h1>
+<div class="card">
+  <form id="f" class="row">
+    <label>Từ ngày<input type="date" name="date_from"></label>
+    <label>Đến ngày<input type="date" name="date_to"></label>
+    {% if user.role == 'admin' %}<label>Mã SV<input name="student_id"></label>{% endif %}
+    <label>Kết quả
+      <select name="result"><option value="">Tất cả</option><option value="granted">Cho vào</option><option value="denied">Từ chối</option><option value="timeout">Hết giờ</option><option value="pending">Đang xác thực</option></select>
+    </label>
+    <label>Sự kiện
+      <select name="event"><option value="">Tất cả</option><option value="card_scan">Quẹt thẻ</option><option value="face_verify">Quét mặt</option><option value="exit_button">Nút trong</option><option value="remote_open">Mở từ xa</option>{% if user.role == 'admin' %}<option value="admin_action">Quản trị</option>{% endif %}</select>
+    </label>
+    <button type="submit">Lọc</button>
+  </form>
+</div>
+<div class="card">
+  <div class="table-wrap"><table>
+    <thead><tr><th>Thời gian</th>{% if user.role == 'admin' %}<th>Mã SV</th>{% endif %}<th>Sự kiện</th><th>Kết quả</th><th>Lý do</th><th>Độ khớp</th><th>Ghi chú</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+  <div class="row" style="margin-top:12px">
+    <button class="secondary small" id="prev">&larr; Trước</button>
+    <span class="muted" id="pageInfo"></span>
+    <button class="secondary small" id="next">Sau &rarr;</button>
+  </div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const SHOW_STUDENT = {{ 'true' if user.role == 'admin' else 'false' }};
+const PAGE = 50;
+let offset = 0, total = 0;
+async function load() {
+  const params = new URLSearchParams();
+  new FormData(document.getElementById("f")).forEach((v, k) => v && params.set(k, v));
+  params.set("limit", PAGE); params.set("offset", offset);
+  try {
+    const data = await api("/api/v1/access-logs?" + params);
+    total = data.total;
+    document.getElementById("rows").innerHTML = renderLogRows(data.items, SHOW_STUDENT);
+    document.getElementById("pageInfo").textContent = total ? `${offset + 1}-${Math.min(offset + PAGE, total)} / ${total}` : "Không có bản ghi";
+  } catch (e) { toast(e.message, true); }
+}
+document.getElementById("f").onsubmit = e => { e.preventDefault(); offset = 0; load(); };
+document.getElementById("prev").onclick = () => { offset = Math.max(0, offset - PAGE); load(); };
+document.getElementById("next").onclick = () => { if (offset + PAGE < total) { offset += PAGE; load(); } };
+load();
+</script>
+{% endblock %}

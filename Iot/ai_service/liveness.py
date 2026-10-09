@@ -23,11 +23,15 @@ def _env_float(name, default):
 
 
 # ---------- Tham số (có thể chỉnh bằng biến môi trường khi hiệu chỉnh với camera thật) ----------
-TURN_DELTA = _env_float("AI_TURN_DELTA", 0.12)           # độ lệch mũi so với tâm hai mắt (đơn vị: khoảng cách hai mắt)
+# Giá trị mặc định lấy từ số đo thật trên webcam (tools/calibrate_liveness.py, ~5 fps): quay đầu 30-40 độ cho
+# độ lệch 0.22-0.36, chớp mắt chỉ kéo EAR xuống 0.76-0.82 lần mức mở (khung hình bắt được phần nông của cú chớp).
+TURN_DELTA = _env_float("AI_TURN_DELTA", 0.15)           # độ lệch mũi so với tâm hai mắt (đơn vị: khoảng cách hai mắt)
 TURN_HOLD_FRAMES = 2                                     # số frame liên tiếp phải giữ tư thế quay đầu
 YAW_LEFT_SIGN = 1 if _env_float("AI_YAW_LEFT_SIGN", 1) >= 0 else -1  # đặt -1 nếu camera bị lật gương
-BLINK_CLOSE_RATIO = _env_float("AI_BLINK_CLOSE_RATIO", 0.70)  # EAR < 70% mức mắt mở -> mắt nhắm
-BLINK_OPEN_RATIO = _env_float("AI_BLINK_OPEN_RATIO", 0.85)    # EAR > 85% mức mắt mở -> mắt mở lại
+BLINK_CLOSE_RATIO = _env_float("AI_BLINK_CLOSE_RATIO", 0.88)  # EAR < 88% mức mắt mở -> mắt nhắm
+BLINK_OPEN_RATIO = _env_float("AI_BLINK_OPEN_RATIO", 0.93)    # EAR > 93% mức mắt mở -> mắt mở lại
+BLINK_MAX_CLOSED_S = _env_float("AI_BLINK_MAX_CLOSED_S", 1.2) # nhắm lâu hơn mức này không phải chớp (cúi đầu, nhắm hẳn)
+BLINK_REF_FRAMES = 12                                    # số khung gần nhất để lấy mức "mắt mở" (trung vị)
 BASELINE_FRAMES = 3                                      # số frame đầu để lấy tư thế trung tính
 
 CHALLENGES = {
@@ -80,9 +84,9 @@ class LivenessChallenge:
         self._baseline = None
         self._hold = 0
         # chớp mắt
-        self._ear_ref = 0.0
-        self._ear_n = 0
+        self._ear_hist = deque(maxlen=BLINK_REF_FRAMES)   # EAR các khung mắt đang mở
         self._closed = False
+        self._closed_at = 0.0
         self.debug = 0.0   # giá trị đang đo, hiển thị lên khung hình để hiệu chỉnh
 
     def time_left(self):
@@ -115,16 +119,27 @@ class LivenessChallenge:
         ear = face_ear(face)
         if ear is None:
             return "pending"
-        self.debug = ear
-        self._ear_n += 1
-        # mức "mắt mở" = đỉnh gần nhất, giảm chậm để thích nghi
-        self._ear_ref = max(ear, self._ear_ref * 0.98)
-        if self._ear_n <= BASELINE_FRAMES + 2:
+        # Vài khung đầu để lấy mức "mắt mở". Dùng trung vị nên 1-2 khung nhiễu/chớp sớm không làm lệch.
+        if len(self._ear_hist) < BASELINE_FRAMES + 2:
+            self._ear_hist.append(ear)
+            self.debug = 1.0
             return "pending"
-        if not self._closed and ear < BLINK_CLOSE_RATIO * self._ear_ref:
-            self._closed = True
-        elif self._closed and ear > BLINK_OPEN_RATIO * self._ear_ref:
-            return "passed"          # nhắm rồi mở lại = một lần chớp
+        ref = float(np.median(self._ear_hist))
+        ratio = ear / (ref + 1e-6)
+        self.debug = ratio                       # hiển thị tỉ lệ so với mắt mở: < ngưỡng đóng = đang nhắm
+        now = time.time()
+        if not self._closed:
+            if ratio < BLINK_CLOSE_RATIO:
+                self._closed, self._closed_at = True, now
+            else:
+                self._ear_hist.append(ear)       # chỉ khung mắt mở mới cập nhật mức tham chiếu
+        elif ratio > BLINK_OPEN_RATIO:
+            return "passed"                      # nhắm rồi mở lại nhanh = một lần chớp
+        elif now - self._closed_at > BLINK_MAX_CLOSED_S:
+            # Nhắm quá lâu: không phải chớp (cúi đầu, nheo mắt...). Lấy mức hiện tại làm mốc mới.
+            self._closed = False
+            self._ear_hist.clear()
+            self._ear_hist.append(ear)
         return "pending"
 
 
@@ -158,7 +173,7 @@ def _crop_scaled(img, bbox, scale, out_w, out_h):
 class PassivePAD:
     """Nạp mọi file `<scale>_<H>x<W>_<tên>.onnx` trong model_dir và lấy trung bình xác suất 'mặt thật'."""
 
-    def __init__(self, model_dir, providers=None):
+    def __init__(self, model_dir, providers=None, sess_options=None):
         import onnxruntime as ort
         self.models = []   # (session, input_name, scale, w, h)
         for path in sorted(glob.glob(os.path.join(model_dir, "*.onnx"))):
@@ -169,7 +184,7 @@ class PassivePAD:
             except (ValueError, StopIteration):
                 print(f"[PAD] Bỏ qua file không đúng định dạng tên: {path}")
                 continue
-            sess = ort.InferenceSession(path, providers=providers or ["CPUExecutionProvider"])
+            sess = ort.InferenceSession(path, sess_options=sess_options, providers=providers or ["CPUExecutionProvider"])
             self.models.append((sess, sess.get_inputs()[0].name, scale, w, h))
             print(f"[PAD] Đã nạp {os.path.basename(path)} (scale={scale}, {w}x{h})")
 

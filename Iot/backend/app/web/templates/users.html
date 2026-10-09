@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Người dùng{% endblock %}
+{% block content %}
+<h1>Người dùng</h1>
+<div class="card">
+  <h2>Thêm người dùng</h2>
+  <form id="f" class="row">
+    <label>Mã sinh viên<input name="student_id" required></label>
+    <label>Họ tên<input name="full_name" required></label>
+    <label>Mật khẩu ban đầu<input name="password" type="password" minlength="6" required></label>
+    <label>UID thẻ (tùy chọn)<input name="card_uid" placeholder="04A1B2C3"></label>
+    <label>Vai trò<select name="role"><option value="student">Sinh viên</option><option value="admin">Admin</option></select></label>
+    <button type="submit">Thêm</button>
+  </form>
+</div>
+<div class="card table-wrap">
+  <table>
+    <thead><tr><th>Mã SV</th><th>Họ tên</th><th>Vai trò</th><th>Trạng thái</th><th>Khuôn mặt</th><th>Thẻ</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+async function load() {
+  const users = await api("/api/v1/users");
+  document.getElementById("rows").innerHTML = users.map(u => `<tr>
+    <td>${esc(u.student_id)}</td><td>${esc(u.full_name)}</td>
+    <td>${u.role === "admin" ? "Admin" : "Sinh viên"}</td>
+    <td>${u.status === "active" ? '<span class="badge ok">Hoạt động</span>' : '<span class="badge bad">Bị khóa</span>'}</td>
+    <td>${u.has_face ? '<span class="badge ok">Đã đăng ký</span>' : '<span class="badge warn">Chưa có</span>'}</td>
+    <td>${u.cards.map(c => esc(c.uid) + (c.status === "revoked" ? " (thu hồi)" : "")).join(", ")}</td>
+    <td><a class="btn small" href="/users/${u.id}">Chi tiết</a></td></tr>`).join("");
+}
+document.getElementById("f").onsubmit = async e => {
+  e.preventDefault();
+  const fd = Object.fromEntries(new FormData(e.target));
+  if (!fd.card_uid) delete fd.card_uid;
+  try { await api("/api/v1/users", { method: "POST", body: fd }); e.target.reset(); toast("Đã thêm người dùng"); load(); }
+  catch (err) { toast(err.message, true); }
+};
+load();
+</script>
+{% endblock %}

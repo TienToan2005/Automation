@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Hồ sơ của tôi{% endblock %}
+{% block content %}
+<h1>Xin chào, {{ user.full_name }}</h1>
+
+<div class="card">
+  <h2>Tài khoản</h2>
+  <p>Mã sinh viên: <b>{{ user.student_id }}</b> &nbsp; Thẻ: <b id="cards">...</b></p>
+  <form id="pwForm" class="row">
+    <label>Mật khẩu cũ<input name="old_password" type="password" required></label>
+    <label>Mật khẩu mới<input name="new_password" type="password" minlength="6" required></label>
+    <button type="submit">Đổi mật khẩu</button>
+  </form>
+</div>
+
+{% include "_enroll.html" %}
+
+<div class="card">
+  <h2>Lịch sử ra vào gần đây</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Thời gian</th><th>Sự kiện</th><th>Kết quả</th><th>Lý do</th><th>Độ khớp</th><th>Ghi chú</th></tr></thead>
+    <tbody id="logs"></tbody>
+  </table></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const UID = {{ target_id }};
+async function load() {
+  const [u, l] = await Promise.all([api(`/api/v1/users/${UID}`), api("/api/v1/access-logs?limit=20")]);
+  document.getElementById("cards").textContent = u.cards.filter(c => c.status === "active").map(c => c.uid).join(", ") || "chưa có";
+  document.getElementById("faceState").innerHTML = u.has_face ? '<span class="badge ok">Đã đăng ký</span>' : '<span class="badge warn">Chưa đăng ký</span>';
+  document.getElementById("logs").innerHTML = renderLogRows(l.items, false);
+}
+document.getElementById("pwForm").onsubmit = async e => {
+  e.preventDefault();
+  try { await api("/api/v1/auth/me/password", { method: "POST", body: Object.fromEntries(new FormData(e.target)) }); e.target.reset(); toast("Đã đổi mật khẩu"); }
+  catch (err) { toast(err.message, true); }
+};
+document.getElementById("delFace").onclick = async () => {
+  if (!confirm("Xóa dữ liệu khuôn mặt? Bạn sẽ không vào được phòng cho đến khi đăng ký lại.")) return;
+  try { await api(`/api/v1/users/${UID}/face`, { method: "DELETE" }); toast("Đã xóa"); load(); } catch (e) { toast(e.message, true); }
+};
+setupFaceEnroll(UID, load);
+load();
+</script>
+{% endblock %}
