@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Cảnh báo an ninh{% endblock %}
+{% block content %}
+<h1>Cảnh báo an ninh</h1>
+<div class="card">
+  <label style="flex-direction:row;align-items:center;gap:8px;margin-bottom:8px"><input type="checkbox" id="showResolved"> Hiện cả cảnh báo đã xử lý</label>
+  <div id="list"></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const REASON = { spoof_pad: "Giả mạo (ảnh in/màn hình)", challenge_failed: "Không qua thách thức người thật", face_mismatch: "Sai khuôn mặt", revoked_card_used: "Dùng thẻ đã thu hồi" };
+async function load() {
+  const items = await api("/api/v1/alerts?include_resolved=" + document.getElementById("showResolved").checked);
+  document.getElementById("list").innerHTML = items.length ? items.map(a => `<div class="alert-item">
+    ${a.snapshot_url ? `<a href="${a.snapshot_url}" target="_blank"><img src="${a.snapshot_url}"></a>` : ""}
+    <div style="flex:1">
+      <span class="badge ${a.level === "high" ? "bad" : "warn"}">${a.level === "high" ? "Cao" : "Trung bình"}</span>
+      <b>${esc(REASON[a.reason] || a.reason)}</b> ${a.student_id ? "&middot; " + esc(a.student_id) : ""}
+      <div>${esc(a.message)}</div><div class="muted">${fmtTime(a.ts)}</div>
+    </div>
+    ${a.resolved ? '<span class="muted">Đã xử lý</span>' : `<button class="small" onclick="resolve(${a.id})">Đánh dấu đã xử lý</button>`}
+  </div>`).join("") : '<p class="muted">Không có cảnh báo.</p>';
+}
+window.resolve = async id => { try { await api(`/api/v1/alerts/${id}/resolve`, { method: "POST" }); load(); } catch (e) { toast(e.message, true); } };
+document.getElementById("showResolved").onchange = load;
+load(); setInterval(load, 15000);
+</script>
+{% endblock %}

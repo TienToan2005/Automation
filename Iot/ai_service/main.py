@@ -35,14 +35,23 @@ def _env_bool(name, default):
 _cam = _env("AI_CAMERA", "0")
 CAMERA_SOURCE = int(_cam) if _cam.isdigit() else _cam      # 0 = webcam; hoặc URL stream của ESP32-CAM (OV5640)
 CAMERA_ID = _env("AI_CAMERA_ID", "cam_cua_chinh_01")
-# Backend (Thành viên 3): AI đẩy kết quả từng phiên (kèm ảnh nghi phạm). Để trống = tắt.
-BACKEND_EVENT_URL = _env("AI_BACKEND_EVENT_URL", "")       # vd http://localhost:8080/api/v1/access/verify
-SERVICE_TOKEN = _env("AI_SERVICE_TOKEN", "")               # gửi kèm header X-Service-Token
+# Backend (Iot/backend): AI đẩy kết quả từng phiên (kèm ảnh nghi phạm). Mặc định trỏ vào backend chạy cùng máy
+# với token dev (khớp LAB_SERVICE_TOKEN mặc định của backend) để chạy được ngay. Khi triển khai thật phải đặt
+# AI_SERVICE_TOKEN riêng; đặt AI_BACKEND_EVENT_URL="" (rỗng) để tắt hẳn việc gửi.
+BACKEND_EVENT_URL = _env("AI_BACKEND_EVENT_URL", "http://localhost:8080/api/v1/access/verify")
+SERVICE_TOKEN = _env("AI_SERVICE_TOKEN", "dev-service-token")   # gửi kèm header X-Service-Token
 THINGSBOARD_URL = _env("AI_THINGSBOARD_URL", "")           # vd http://<tb-host>:8080/api/v1/<DEVICE_TOKEN>/telemetry
 PAD_MODEL_DIR = _env("AI_PAD_MODEL_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "models"))
 USE_GPU = _env_bool("AI_USE_GPU", False)
 SHOW_WINDOW = _env_bool("AI_SHOW_WINDOW", True)
 REQUIRE_PAD = _env_bool("AI_REQUIRE_PAD", True)            # True = thiếu model PAD thì từ chối (fail-closed)
+KEEP_CAMERA_OPEN = _env_bool("AI_KEEP_CAMERA_OPEN", False) # False = chỉ mở webcam khi có phiên quét mặt (nhả lúc rảnh)
+# ONNX Runtime mặc định dùng hết số luồng CPU và chúng tranh chấp nhau (đo thực tế trên máy 20 luồng:
+# mặc định ~1 fps, 4 luồng ~5 fps). Chớp mắt chỉ kéo dài ~0.2s nên cần tốc độ xử lý vài fps trở lên.
+ORT_THREADS = int(_env("AI_ORT_THREADS", str(min(4, os.cpu_count() or 4))))   # 0 = để ONNX Runtime tự quyết
+# Kích thước ảnh đưa vào bộ phát hiện mặt. 320 nhanh hơn ~3 lần so với 640 (139 ms -> ~40 ms) mà vẫn đủ cho
+# webcam vì mặt phải rộng >= AI_MIN_FACE_WIDTH. Tăng lên 640 nếu cần bắt mặt nhỏ/xa (đổi lại chậm hơn).
+DET_SIZE = int(_env("AI_DET_SIZE", "320"))
 
 SIMILARITY_THRESHOLD = float(_env("AI_SIM_THRESHOLD", "0.50"))
 REQUIRED_FRAMES = 5      # số frame liên tiếp khớp mặt trước khi sang bước thách thức
@@ -73,6 +82,7 @@ ai_state = {
     "similarity": 0.0,
     "pad_score": 0.0,
     "challenge": None,       # {"type", "text", "text_vi", "deadline"}
+    "ended_at": 0,           # thời điểm phiên gần nhất kết thúc (để cửa sổ camera hiện kết quả vài giây)
 }
 known_embeddings = {}
 face_app = None
@@ -115,7 +125,10 @@ def _event_worker():
         if BACKEND_EVENT_URL:
             try:
                 headers = {"X-Service-Token": SERVICE_TOKEN} if SERVICE_TOKEN else {}
-                requests.post(BACKEND_EVENT_URL, json=ev, headers=headers, timeout=3)
+                r = requests.post(BACKEND_EVENT_URL, json=ev, headers=headers, timeout=3)
+                if r.status_code >= 400:
+                    print(f"[EVENT] Backend từ chối phiên {ev['session_id']}: HTTP {r.status_code} {r.text[:120]} "
+                          f"(kiểm tra AI_SERVICE_TOKEN khớp LAB_SERVICE_TOKEN)")
             except requests.RequestException as e:
                 print(f"[EVENT] Gửi backend thất bại: {e}")
         if THINGSBOARD_URL:
@@ -158,7 +171,7 @@ def finish(result, reason, frame=None):
     with state_lock:
         if not ai_state["is_active"]:
             return False
-        ai_state.update(is_active=False, result=result, reason=reason, phase="done", hint="")
+        ai_state.update(is_active=False, result=result, reason=reason, phase="done", hint="", ended_at=time.time())
         snap = encode_snapshot(frame) if result in ("denied", "timeout") else None
         event = _build_event(frame, snap)
     print(f"[SESSION] {event['student_id']} -> {result} ({reason}) sim={event['confidence_score']} pad={event['liveness']['pad_score']}")
@@ -410,9 +423,38 @@ def process_frame(frame, ctx):
             finish("denied", "challenge_failed", frame)
     return drawn, debug
 
-def draw_overlay(frame, drawn, debug):
+RESULT_BANNER_S = 4.0
+BANNER_REASON = {
+    "face_mismatch": "SAI KHUON MAT", "spoof_pad": "PHAT HIEN GIA MAO", "challenge_failed": "KHONG QUA THU THACH",
+    "not_enrolled": "CHUA DANG KY MAT", "pad_unavailable": "THIEU MODEL CHONG GIA MAO", "timeout": "HET GIO",
+}
+
+def result_banner(img):
+    """Vẽ kết quả của phiên vừa xong lên cửa sổ chờ, để người dùng biết hệ thống đã xử lý xong
+    (sau phiên AI nhả camera nên nếu không có dòng này thì cửa sổ chỉ đen và trông như bị lỗi)."""
+    if time.time() - ai_state["ended_at"] > RESULT_BANNER_S:
+        return
+    result, reason = ai_state["result"], ai_state["reason"]
+    if result == "granted":
+        lines, color = ["HOP LE", "Dang gui ket qua de mo cua..."], (0, 255, 0)
+    elif result == "denied":
+        lines, color = ["TU CHOI", BANNER_REASON.get(reason, reason.upper())], (0, 0, 255)
+    elif result == "timeout":
+        lines, color = ["HET GIO", "Khong nhan dien duoc khuon mat"], (0, 165, 255)
+    else:
+        return
+    img[:] = 0
+    cv2.putText(img, lines[0], (20, 55), cv2.FONT_HERSHEY_SIMPLEX, 1.6, color, 3)
+    cv2.putText(img, lines[1], (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+def draw_overlay(frame, drawn, debug, fps=0.0):
+    # Hiển thị kiểu soi gương: "phải" của người dùng nằm bên phải màn hình, đúng với chữ "QUAY DAU SANG PHAI".
+    # Chỉ lật hình để hiển thị; việc phân tích luôn dùng khung hình gốc.
+    w = frame.shape[1]
+    frame[:] = cv2.flip(frame, 1)
     for face, ok, label in drawn:
         x1, y1, x2, y2 = map(int, face.bbox)
+        x1, x2 = w - x2, w - x1
         color = (0, 255, 0) if ok else (0, 0, 255)
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         cv2.putText(frame, label, (x1, max(15, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
@@ -429,73 +471,170 @@ def draw_overlay(frame, drawn, debug):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 200, 255), 2)
     if debug:
         cv2.putText(frame, debug, (20, frame.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    cv2.putText(frame, f"{fps:.1f} fps", (frame.shape[1] - 110, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                (0, 255, 0) if fps >= 3 else (0, 0, 255), 2)
 
 def init_models():
     global face_app, pad
+    import onnxruntime as ort
     providers = ["CPUExecutionProvider"]
     ctx_id = -1
     if USE_GPU:
-        import onnxruntime as ort
         if "CUDAExecutionProvider" in ort.get_available_providers():
             providers, ctx_id = ["CUDAExecutionProvider", "CPUExecutionProvider"], 0
         else:
             print("[GPU] Không có CUDAExecutionProvider (cần `pip install onnxruntime-gpu`) -> chạy CPU")
-    face_app = FaceAnalysis(name='buffalo_l', providers=providers)
-    face_app.prepare(ctx_id=ctx_id, det_size=(640, 640))
-    pad = PassivePAD(PAD_MODEL_DIR, providers)
+    so = ort.SessionOptions()
+    if ORT_THREADS > 0:                      # xem chú thích ORT_THREADS ở phần cấu hình
+        so.intra_op_num_threads, so.inter_op_num_threads = ORT_THREADS, 1
+        print(f"[ORT] Giới hạn {ORT_THREADS} luồng cho mỗi model")
+    # Chỉ nạp module cần dùng: phát hiện, nhúng khuôn mặt, landmark 3D (thách thức). Bỏ landmark 2D 106 điểm
+    # và đoán tuổi/giới tính, giảm ~35% thời gian mỗi khung hình.
+    face_app = FaceAnalysis(name='buffalo_l', providers=providers, sess_options=so,
+                            allowed_modules=['detection', 'recognition', 'landmark_3d_68'])
+    face_app.prepare(ctx_id=ctx_id, det_size=(DET_SIZE, DET_SIZE))
+    pad = PassivePAD(PAD_MODEL_DIR, providers, sess_options=so)
     if not pad.enabled:
         msg = "KHÔNG có model PAD trong " + PAD_MODEL_DIR + " (xem tools/export_pad_onnx.py)"
         print(("[PAD] " + msg + " -> mọi phiên sẽ bị từ chối") if REQUIRE_PAD else ("[PAD] CẢNH BÁO: " + msg + " -> CHẠY KHÔNG CHỐNG GIẢ MẠO ẢNH IN/MÀN HÌNH"))
+
+class CameraStream:
+    """Đọc camera ở luồng riêng, luôn giữ khung hình MỚI NHẤT.
+
+    Nếu đọc ngay trong vòng lặp xử lý thì khi AI chậm, OpenCV/driver xếp hàng khung hình cũ:
+    hình trễ vài giây và cú chớp mắt bị rơi mất."""
+
+    def __init__(self, source):
+        self.cap = cv2.VideoCapture(source)
+        self.ok = False
+        self.frame, self.seq = None, 0
+        self._lock = threading.Lock()
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while not self._stop:
+            ret, frame = self.cap.read()
+            self.ok = bool(ret)
+            if ret:
+                with self._lock:
+                    self.frame, self.seq = frame, self.seq + 1
+            else:
+                time.sleep(0.1)
+
+    def latest(self):
+        with self._lock:
+            return self.frame, self.seq
+
+    def wait_first_frame(self, timeout=3.0):
+        t0 = time.time()
+        while self.frame is None and time.time() - t0 < timeout:
+            time.sleep(0.05)
+        return self.frame is not None
+
+    def release(self):
+        self._stop = True
+        self._thread.join(timeout=2)
+        self.cap.release()
+
 
 def main():
     global camera_ok
     known_embeddings.update(load_known_embeddings())
     init_models()
+    if not BACKEND_EVENT_URL:
+        print("[CẢNH BÁO] AI_BACKEND_EVENT_URL đang rỗng: kết quả quét mặt KHÔNG được gửi về backend, "
+              "ESP32 sẽ không bao giờ nhận được kết quả.")
+    else:
+        print(f"[BACKEND] Gửi kết quả về {BACKEND_EVENT_URL}"
+              + ("  (đang dùng token dev mặc định)" if SERVICE_TOKEN == "dev-service-token" else ""))
     threading.Thread(target=_event_worker, daemon=True).start()
     threading.Thread(target=run_server, daemon=True).start()
 
-    cap = cv2.VideoCapture(CAMERA_SOURCE)
+    # Webcam Windows chỉ cho một chương trình dùng tại một thời điểm. Mặc định chỉ mở camera khi
+    # có phiên quét mặt, nhờ vậy trình duyệt (trang đăng ký khuôn mặt) dùng được camera lúc rảnh.
+    stream = CameraStream(CAMERA_SOURCE)
+    stream.wait_first_frame()
+    camera_ok = stream.ok                                  # thăm dò một lần để /health báo đúng
+    if not KEEP_CAMERA_OPEN:
+        stream.release()
+        stream = None
     ctx = None
-    print("HỆ THỐNG AI SẴN SÀNG (FastAPI Port 5050)... (Chờ quét thẻ)")
+    last_seq = -1
+    n_frames, t_first = 0, 0.0                             # đếm khung hình đã xử lý trong phiên để báo fps
+    last_frame = None                                      # khung hình cuối của phiên, đính kèm khi hết giờ
+    idle_frame = np.zeros((120, 640, 3), np.uint8)
+    cv2.putText(idle_frame, "VUI LONG QUET THE...", (50, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+    print("HỆ THỐNG AI SẴN SÀNG (FastAPI Port 5050)... (Chờ quét thẻ)"
+          + ("" if KEEP_CAMERA_OPEN else " Camera chỉ mở khi có phiên quét mặt."))
 
     try:
         while True:
-            ret, frame = cap.read()
-            camera_ok = bool(ret)
-            if not ret:
-                time.sleep(0.5)
-                continue
-
             if not ai_state["is_active"]:
-                ctx = None   # "chặn cửa": không chạy AI khi chưa có phiên
+                if n_frames:
+                    dur = max(time.time() - t_first, 1e-6)
+                    print(f"[PERF] Phiên vừa xong: xử lý {n_frames} khung hình trong {dur:.1f}s = {n_frames / dur:.1f} fps"
+                          + ("  <-- QUÁ CHẬM, chớp mắt dễ bị bỏ lỡ" if n_frames / dur < 2 else ""))
+                    n_frames = 0
+                ctx, last_frame = None, None   # "chặn cửa": không chạy AI khi chưa có phiên
+                if stream is not None and not KEEP_CAMERA_OPEN:
+                    stream.release()                   # nhả camera cho chương trình khác
+                    stream = None
                 if SHOW_WINDOW:
-                    cv2.putText(frame, "VUI LONG QUET THE...", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-                    cv2.imshow('Lab 2FA System', frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                    idle = idle_frame.copy()
+                    if stream is not None:             # chỉ xảy ra khi AI_KEEP_CAMERA_OPEN=1
+                        frame, _ = stream.latest()
+                        camera_ok = stream.ok
+                        if frame is not None:
+                            idle = frame.copy()
+                            cv2.putText(idle, "VUI LONG QUET THE...", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                    result_banner(idle[:120] if stream is None else idle)
+                    cv2.imshow('Lab 2FA System', idle)
+                    if cv2.waitKey(30) & 0xFF == ord('q'):
                         break
                 else:
-                    time.sleep(0.03)
+                    time.sleep(0.05)
                 continue
 
             if ctx is None or ctx.sid != ai_state["session_id"]:
                 ctx = SessionCtx(ai_state["session_id"])
 
+            # Kiểm tra hết giờ TRƯỚC khi đọc camera: camera lỗi vẫn phải kết thúc phiên để báo về backend
             if time.time() > ai_state["timeout_at"]:
                 print("!!! [BÁO ĐỘNG] Quá thời gian quy định không nhận diện được mặt hợp lệ.")
-                finish("timeout", "timeout", frame)
+                finish("timeout", "timeout", last_frame)
                 continue
 
+            if stream is None:
+                stream, last_seq = CameraStream(CAMERA_SOURCE), -1   # mở lại khi có phiên mới
+            frame, seq = stream.latest()
+            camera_ok = stream.ok
+            if frame is None or seq == last_seq:       # chưa có khung hình mới: không xử lý lại khung cũ
+                if SHOW_WINDOW:
+                    cv2.waitKey(1)
+                time.sleep(0.005)
+                continue
+            last_seq = seq
+
+            last_frame = frame
+            if n_frames == 0:
+                t_first = time.time()
             drawn, debug = process_frame(frame, ctx)
+            n_frames += 1
             if SHOW_WINDOW:
-                draw_overlay(frame, drawn, debug)
+                fps = n_frames / max(time.time() - t_first, 1e-6) if n_frames > 1 else 0.0
+                draw_overlay(frame, drawn, debug, fps)
                 cv2.imshow('Lab 2FA System', frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
     except KeyboardInterrupt:
         pass
     finally:
-        cap.release()
+        if stream is not None:
+            stream.release()
         cv2.destroyAllWindows()
+
 
 if __name__ == '__main__':
     main()

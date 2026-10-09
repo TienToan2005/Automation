@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Tổng quan{% endblock %}
+{% block content %}
+<h1>Tổng quan</h1>
+<div class="grid" id="stats"></div>
+
+<div class="card">
+  <h2>Thiết bị cửa</h2>
+  <div id="devices"><p class="muted">Chưa có thiết bị nào kết nối. Hãy khởi động Wokwi.</p></div>
+</div>
+
+<div class="card">
+  <h2>Mở cửa từ xa</h2>
+  <p class="muted">Lệnh được gửi tới ESP32 ở lần heartbeat kế tiếp (tối đa vài giây). Mọi lần mở đều ghi vào nhật ký kèm lý do.</p>
+  <div class="row">
+    <label style="flex:1;min-width:240px">Lý do (bắt buộc)<input id="reason" placeholder="VD: Sinh viên quên thẻ, cần lấy thiết bị"></label>
+    <button class="danger" id="openBtn">Mở cửa</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Hoạt động gần đây</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Thời gian</th><th>Mã SV</th><th>Sự kiện</th><th>Kết quả</th><th>Lý do</th><th>Độ khớp</th><th>Ghi chú</th></tr></thead>
+    <tbody id="logs"></tbody>
+  </table></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const STATE_LABEL = { WAIT_CARD: "Chờ quẹt thẻ", WAIT_FACE: "Đang quét mặt", UNLOCKED: "Cửa đang MỞ", LOCKOUT: "Bị khóa tạm (sai nhiều lần)" };
+let defaultDevice = "";
+
+async function load() {
+  const [s, l, devs] = await Promise.all([api("/api/v1/system/status"), api("/api/v1/access-logs?limit=15"), api("/api/v1/devices")]);
+  defaultDevice = s.default_device_id;
+  const ai = s.ai;
+  const aiTxt = !ai ? "Offline" : (!ai.camera_ok ? "Camera lỗi" : (!ai.pad_enabled ? "Thiếu PAD" : "Hoạt động"));
+  const aiBad = !ai || !ai.camera_ok || !ai.pad_enabled;
+  const stat = (n, label, cls = "") => `<div class="stat"><div class="n ${cls}">${n}</div><div class="l">${label}</div></div>`;
+  document.getElementById("stats").innerHTML =
+    stat(s.today_granted, "Lượt vào hôm nay") + stat(s.today_denied, "Lượt từ chối hôm nay", s.today_denied ? "bad-text" : "") +
+    stat(s.open_alerts, "Cảnh báo chưa xử lý", s.open_alerts ? "bad-text" : "") +
+    stat(`${s.enrolled}/${s.users}`, "Đã đăng ký khuôn mặt") + stat(aiTxt, "AI Service", aiBad ? "bad-text" : "");
+  document.getElementById("logs").innerHTML = renderLogRows(l.items, true);
+  if (devs.length) document.getElementById("devices").innerHTML = devs.map(d => `
+    <div class="row" style="justify-content:space-between;padding:6px 0">
+      <div>
+        <b>${esc(d.device_id)}</b>
+        ${d.online ? '<span class="badge ok">Online</span>' : `<span class="badge bad">Offline (${d.last_seen_s}s trước)</span>`}
+        <div class="muted">${d.online ? esc(STATE_LABEL[d.state] || d.state) : "Mất kết nối"}
+          &middot; Khóa: <b>${d.relay ? "MỞ" : "ĐÓNG"}</b> &middot; WiFi ${d.rssi ?? "?"} dBm &middot; Uptime ${d.uptime_s}s &middot; ${esc(d.ip)}</div>
+      </div>
+      ${d.state === "LOCKOUT" && d.online ? `<button class="secondary small" onclick="resetLockout('${esc(d.device_id)}')">Gỡ khóa tạm</button>` : ""}
+    </div>`).join("");
+}
+window.resetLockout = async id => {
+  try { await api(`/api/v1/devices/${id}/commands`, { method: "POST", body: { command: "reset_lockout" } }); toast("Đã gửi lệnh gỡ khóa tạm"); }
+  catch (e) { toast(e.message, true); }
+};
+document.getElementById("openBtn").onclick = async () => {
+  const reason = document.getElementById("reason").value;
+  if (!confirm("Xác nhận mở cửa từ xa?")) return;
+  try {
+    await api("/api/v1/door/emergency-open", { method: "POST", body: { reason } });
+    toast("Đã gửi lệnh mở cửa tới thiết bị");
+    document.getElementById("reason").value = "";
+    load();
+  } catch (e) { toast(e.message, true); }
+};
+load(); setInterval(load, 3000);
+</script>
+{% endblock %}

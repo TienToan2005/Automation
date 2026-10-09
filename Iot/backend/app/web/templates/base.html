@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Quản lý phòng Lab{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{% if user %}
+<nav>
+  <span class="brand">Lab Access</span>
+  {% if user.role == "admin" %}
+    <a href="/dashboard" class="{{ 'active' if request.url.path == '/dashboard' }}">Tổng quan</a>
+    <a href="/users" class="{{ 'active' if request.url.path.startswith('/users') }}">Người dùng</a>
+    <a href="/alerts" class="{{ 'active' if request.url.path == '/alerts' }}">Cảnh báo</a>
+    <a href="/logs" class="{{ 'active' if request.url.path == '/logs' }}">Nhật ký</a>
+  {% else %}
+    <a href="/me" class="{{ 'active' if request.url.path == '/me' }}">Hồ sơ của tôi</a>
+    <a href="/logs" class="{{ 'active' if request.url.path == '/logs' }}">Lịch sử ra vào</a>
+  {% endif %}
+  <span class="spacer"></span>
+  <span class="who">{{ user.full_name }} ({{ 'Admin' if user.role == 'admin' else 'Sinh viên' }})</span>
+  <a href="#" onclick="logout();return false;">Đăng xuất</a>
+</nav>
+{% endif %}
+<main>{% block content %}{% endblock %}</main>
+<div id="toast"></div>
+<script src="/static/app.js"></script>
+{% block script %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Chi tiết người dùng{% endblock %}
+{% block content %}
+<p><a href="/users">&larr; Danh sách</a></p>
+<h1 id="title">...</h1>
+
+<div class="card">
+  <h2>Thông tin &amp; trạng thái</h2>
+  <div id="info" style="margin-bottom:12px"></div>
+  <div class="row">
+    <label>Họ tên<input id="fullName"></label>
+    <label>Vai trò<select id="role"><option value="student">Sinh viên</option><option value="admin">Admin</option></select></label>
+    <label>Đặt lại mật khẩu<input id="newPass" type="password" placeholder="để trống nếu không đổi"></label>
+    <button id="saveBtn">Lưu</button>
+  </div>
+  <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
+  <div class="row" id="suspendBox"></div>
+</div>
+
+<div class="card">
+  <h2>Thẻ RFID</h2>
+  <table><tbody id="cards"></tbody></table>
+  <form id="cardForm" class="row" style="margin-top:12px">
+    <label>UID thẻ mới<input name="uid" required placeholder="04A1B2C3"></label>
+    <button type="submit">Cấp thẻ</button>
+  </form>
+</div>
+
+{% include "_enroll.html" %}
+
+<div class="card">
+  <h2>Lịch sử ra vào</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Thời gian</th><th>Mã SV</th><th>Sự kiện</th><th>Kết quả</th><th>Lý do</th><th>Độ khớp</th><th>Ghi chú</th></tr></thead>
+    <tbody id="logs"></tbody>
+  </table></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const UID = {{ target_id }};
+let current = null;
+
+async function load() {
+  current = await api(`/api/v1/users/${UID}`);
+  const u = current;
+  document.getElementById("title").textContent = `${u.full_name} (${u.student_id})`;
+  document.getElementById("info").innerHTML =
+    (u.status === "active" ? '<span class="badge ok">Hoạt động</span>' : `<span class="badge bad">Bị khóa</span> <span class="muted">${esc(u.suspend_reason)}</span>`);
+  document.getElementById("fullName").value = u.full_name;
+  document.getElementById("role").value = u.role;
+  document.getElementById("faceState").innerHTML = u.has_face
+    ? `<span class="badge ok">Đã đăng ký ${fmtTime(u.face_enrolled_at)}</span>` : '<span class="badge warn">Chưa đăng ký</span>';
+  document.getElementById("cards").innerHTML = u.cards.length ? u.cards.map(c => `<tr><td>${esc(c.uid)}</td>
+    <td>${c.status === "active" ? '<span class="badge ok">Đang dùng</span>' : '<span class="badge bad">Đã thu hồi</span>'}</td>
+    <td>${c.status === "active" ? `<button class="danger small" onclick="revoke(${c.id})">Thu hồi (báo mất)</button>` : ""}</td></tr>`).join("")
+    : '<tr><td class="muted">Chưa có thẻ</td></tr>';
+  document.getElementById("suspendBox").innerHTML = u.status === "active"
+    ? `<label style="flex:1;min-width:220px">Lý do khóa<input id="susReason"></label><button class="danger" onclick="suspend()">Khóa tài khoản</button><button class="danger" onclick="removeUser()">Xóa người dùng</button>`
+    : `<button onclick="activate()">Mở khóa tài khoản</button><button class="danger" onclick="removeUser()">Xóa người dùng</button>`;
+  const l = await api(`/api/v1/access-logs?student_id=${encodeURIComponent(u.student_id)}&limit=30`);
+  document.getElementById("logs").innerHTML = renderLogRows(l.items, true);
+}
+const act = (fn, ok) => async (...a) => { try { await fn(...a); toast(ok); load(); } catch (e) { toast(e.message, true); } };
+
+document.getElementById("saveBtn").onclick = act(() => {
+  const body = { full_name: document.getElementById("fullName").value, role: document.getElementById("role").value };
+  const p = document.getElementById("newPass").value; if (p) body.password = p;
+  document.getElementById("newPass").value = "";
+  return api(`/api/v1/users/${UID}`, { method: "PUT", body });
+}, "Đã lưu");
+window.suspend = act(() => api(`/api/v1/users/${UID}/suspend`, { method: "POST", body: { reason: document.getElementById("susReason").value } }), "Đã khóa tài khoản");
+window.activate = act(() => api(`/api/v1/users/${UID}/activate`, { method: "POST" }), "Đã mở khóa");
+window.revoke = act(id => confirm("Thu hồi thẻ này? Có hiệu lực ngay.") ? api(`/api/v1/cards/${id}/revoke`, { method: "POST" }) : Promise.reject(new Error("Đã hủy")), "Đã thu hồi thẻ");
+document.getElementById("cardForm").onsubmit = e => {
+  e.preventDefault();
+  act(() => api(`/api/v1/users/${UID}/cards`, { method: "POST", body: { uid: new FormData(e.target).get("uid") } }), "Đã cấp thẻ")().then(() => e.target.reset());
+};
+window.removeUser = async () => {
+  if (!confirm("Xóa người dùng cùng thẻ và dữ liệu khuôn mặt? Không thể hoàn tác.")) return;
+  try { await api(`/api/v1/users/${UID}`, { method: "DELETE" }); location.href = "/users"; } catch (e) { toast(e.message, true); }
+};
+document.getElementById("delFace").onclick = act(() => confirm("Xóa dữ liệu khuôn mặt?") ? api(`/api/v1/users/${UID}/face`, { method: "DELETE" }) : Promise.reject(new Error("Đã hủy")), "Đã xóa dữ liệu khuôn mặt");
+
+setupFaceEnroll(UID, load);
+load();
+</script>
+{% endblock %}

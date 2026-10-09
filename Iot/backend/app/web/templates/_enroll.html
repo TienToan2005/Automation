@@ -1,0 +1,18 @@
+<div class="card">
+  <h2>Đăng ký khuôn mặt <span id="faceState"></span></h2>
+  <p class="muted">Chụp hoặc chọn tối thiểu {{ MIN_FACE_IMAGES }} ảnh rõ mặt, đủ sáng, nhìn thẳng. Mỗi ảnh chỉ có một khuôn mặt. Ảnh chụp từ màn hình hoặc ảnh in sẽ bị từ chối.</p>
+  <video id="cam" autoplay playsinline muted></video>
+  <div class="row">
+    <button class="secondary" id="camStart" type="button">Bật camera</button>
+    <button class="secondary" id="camShot" type="button">Chụp ảnh</button>
+    <button class="secondary" id="camStop" type="button" style="display:none">Tắt camera</button>
+    <label>Hoặc chọn file<input type="file" id="fileInput" accept="image/*" multiple></label>
+  </div>
+  <div id="shots"></div>
+  <div class="row">
+    <button id="enrollSubmit" type="button">Gửi đăng ký</button>
+    <span class="muted">Đã chọn <b id="shotCount">0</b> ảnh</span>
+    <button class="danger small" id="delFace" type="button">Xóa dữ liệu khuôn mặt</button>
+  </div>
+  <div id="enrollResult" style="margin-top:10px"></div>
+</div>
