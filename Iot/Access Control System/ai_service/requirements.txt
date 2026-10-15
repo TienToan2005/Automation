@@ -1,0 +1,12 @@
+opencv-python
+insightface
+# Chạy CPU: dùng dòng "onnxruntime" bên dưới.
+# Chạy GPU (RTX 3050): thay bằng  onnxruntime-gpu==1.26.0  (KHÔNG cài cùng onnxruntime: pip uninstall -y onnxruntime trước).
+#   - 1.26.0 là bản cuối build cho CUDA 12 + cuDNN 9, dùng chung được DLL trong torch cu12x đã cài sẵn.
+#   - Từ 1.27.0 trên PyPI là CUDA 13 (cần thêm gói nvidia-*-cu13 ~1 GB), không dùng được DLL của torch cu128.
+onnxruntime
+numpy
+requests
+fastapi
+uvicorn
+pydantic

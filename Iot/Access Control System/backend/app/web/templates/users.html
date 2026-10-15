@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Người dùng{% endblock %}
+{% block content %}
+<h1>Người dùng</h1>
+<div class="card">
+  <h2>Thêm người dùng mới</h2>
+  <form id="f">
+    <div class="enroll-grid">
+      <div>
+        <div class="fields">
+          <label>Mã sinh viên<input name="student_id" required autocomplete="off"></label>
+          <label>Họ tên<input name="full_name" required autocomplete="off"></label>
+          <label>Mã thẻ RFID (UID)<input name="card_uid" placeholder="04A1B2C3" autocomplete="off"></label>
+          <label>Phân quyền<select name="role"><option value="student">Sinh viên</option><option value="admin">Admin</option></select></label>
+          <label class="full">Mật khẩu ban đầu<input name="password" type="password" minlength="6" required autocomplete="new-password"></label>
+        </div>
+        <p class="muted" style="margin:14px 0 6px">Quét tối thiểu <b>{{ MIN_FACE_IMAGES }}</b> ảnh hợp lệ (nhìn thẳng, hơi xoay mặt nhẹ giữa các lần chụp, đủ sáng, chỉ một người trong khung). Ảnh chụp từ màn hình hoặc ảnh in sẽ bị từ chối.</p>
+        <div class="row">
+          <button id="addSubmit" type="submit" disabled>Thêm người dùng</button>
+          <span class="muted">Đã quét hợp lệ <b id="okCount">0</b>/{{ MIN_FACE_IMAGES }}</span>
+        </div>
+      </div>
+      <div>
+        <div class="camera-box" id="camBox">
+          <span class="placeholder">Camera đang tắt</span>
+          <video id="cam" autoplay playsinline muted></video>
+          <div class="guide"></div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button class="secondary" id="camStart" type="button">Bật camera</button>
+          <button id="camShot" type="button" disabled>Chụp &amp; Quét khuôn mặt</button>
+          <button class="secondary" id="camStop" type="button" style="display:none">Tắt camera</button>
+        </div>
+        <div id="scanStatus" class="scan-status" role="status" aria-live="polite">Bật camera, rồi bấm "Chụp &amp; Quét khuôn mặt".</div>
+        <div id="shots" class="shots"></div>
+      </div>
+    </div>
+  </form>
+</div>
+<div class="card table-wrap">
+  <table>
+    <thead><tr><th>Mã SV</th><th>Họ tên</th><th>Vai trò</th><th>Trạng thái</th><th>Khuôn mặt</th><th>Thẻ</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+async function load() {
+  const users = await api("/api/v1/users");
+  document.getElementById("rows").innerHTML = users.map(u => `<tr>
+    <td>${esc(u.student_id)}</td><td>${esc(u.full_name)}</td>
+    <td>${u.role === "admin" ? "Admin" : "Sinh viên"}</td>
+    <td>${u.status === "active" ? '<span class="badge ok">Hoạt động</span>' : '<span class="badge bad">Bị khóa</span>'}</td>
+    <td>${u.has_face ? '<span class="badge ok">Đã đăng ký</span>' : '<span class="badge warn">Chưa có</span>'}</td>
+    <td>${u.cards.map(c => esc(c.uid) + (c.status === "revoked" ? " (thu hồi)" : "")).join(", ")}</td>
+    <td><a class="btn small" href="/users/${u.id}">Chi tiết</a></td></tr>`).join("");
+}
+setupLiveEnroll(document.getElementById("f"), {{ MIN_FACE_IMAGES }}, load);
+load();
+</script>
+{% endblock %}

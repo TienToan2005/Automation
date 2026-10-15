@@ -1,0 +1,28 @@
+# Chạy: docker compose up -d --build   (xem docs/HUONG_DAN_CHAY.md mục 4)
+services:
+  backend:
+    build: ./backend
+    ports: ["8080:8080"]
+    environment:
+      LAB_AI_BASE_URL: ${LAB_AI_BASE_URL:-http://ai:5050}
+      LAB_SECRET_KEY: ${LAB_SECRET_KEY:-doi-thanh-chuoi-ngau-nhien-dai-it-nhat-32-ky-tu}
+      LAB_SERVICE_TOKEN: ${LAB_SERVICE_TOKEN:-dev-service-token}
+      LAB_DEVICE_TOKEN: ${LAB_DEVICE_TOKEN:-dev-device-token}
+      LAB_ADMIN_PASSWORD: ${LAB_ADMIN_PASSWORD:-admin123}
+      LAB_TELEGRAM_BOT_TOKEN: ${LAB_TELEGRAM_BOT_TOKEN:-}
+      LAB_TELEGRAM_CHAT_ID: ${LAB_TELEGRAM_CHAT_ID:-}
+    volumes: ["lab-data:/srv/data"]
+    restart: unless-stopped
+  ai:
+    build: ./ai_service
+    ports: ["5050:5050"]
+    environment:
+      AI_BACKEND_EVENT_URL: http://backend:8080/api/v1/access/verify
+      AI_SERVICE_TOKEN: ${LAB_SERVICE_TOKEN:-dev-service-token}
+      AI_CAMERA: ${AI_CAMERA:?Đặt AI_CAMERA=http://<ip-esp32-cam>:81/stream trong file .env cạnh docker-compose.yml}
+    volumes: ["insightface-models:/root/.insightface"]
+    depends_on: [backend]
+    restart: unless-stopped
+volumes:
+  lab-data:
+  insightface-models:
