@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Báo cáo{% endblock %}
+{% block content %}
+<h1>Báo cáo ra vào</h1>
+<p class="muted print-only" id="printRange"></p>
+
+<div class="card no-print">
+  <form id="rangeForm" class="row range-bar">
+    <label>Từ ngày<input type="date" name="date_from" required></label>
+    <label>Đến ngày<input type="date" name="date_to" required></label>
+    <button type="submit">Xem báo cáo</button>
+    <span class="muted">Nhanh:</span>
+    <button type="button" class="secondary small" data-quick="today">Hôm nay</button>
+    <button type="button" class="secondary small" data-quick="7">7 ngày</button>
+    <button type="button" class="secondary small" data-quick="30">30 ngày</button>
+    <button type="button" class="secondary small" data-quick="month">Tháng này</button>
+  </form>
+  <div class="row" style="margin-top:12px">
+    <a class="btn small" id="dlXlsx" href="#">Tải Excel (.xlsx)</a>
+    <a class="btn small secondary" id="dlLogs" href="#">Nhật ký (.csv)</a>
+    <a class="btn small secondary" id="dlAlerts" href="#">Cảnh báo (.csv)</a>
+    <button type="button" class="small secondary" onclick="window.print()">In / Lưu PDF</button>
+    <span class="muted" id="rangeInfo"></span>
+  </div>
+</div>
+
+<div class="grid" id="kpis"></div>
+
+<div class="card">
+  <h2>Lượt ra vào theo ngày</h2>
+  <div id="chartDay"></div>
+</div>
+<div class="card">
+  <h2>Phân bố theo giờ trong ngày</h2>
+  <p class="muted" style="margin-top:-6px">Cộng dồn cả khoảng đã chọn, theo giờ địa phương. Giúp thấy giờ cao điểm và giờ có nhiều lượt bị từ chối.</p>
+  <div id="chartHour"></div>
+</div>
+
+<div class="cols-2">
+  <div class="card">
+    <h2>Lý do bị từ chối / hết giờ</h2>
+    <div class="table-wrap"><table><thead><tr><th>Lý do</th><th>Số lượt</th><th></th></tr></thead><tbody id="reasons"></tbody></table></div>
+  </div>
+  <div class="card">
+    <h2>Cảnh báo an ninh</h2>
+    <div id="alertSummary"></div>
+  </div>
+  <div class="card">
+    <h2>Vào nhiều nhất</h2>
+    <div class="table-wrap"><table><thead><tr><th>Mã SV</th><th>Họ tên</th><th>Lượt vào</th><th>Bị từ chối</th></tr></thead><tbody id="topUsers"></tbody></table></div>
+  </div>
+  <div class="card">
+    <h2>Bị từ chối nhiều nhất</h2>
+    <div class="table-wrap"><table><thead><tr><th>Mã SV</th><th>Họ tên</th><th>Bị từ chối</th><th>Lượt vào</th></tr></thead><tbody id="topDenied"></tbody></table></div>
+  </div>
+</div>
+<p class="muted" id="footnote" style="margin-top:14px"></p>
+{% endblock %}
+{% block script %}
+<script>
+const $ = id => document.getElementById(id);
+const form = $("rangeForm");
+let today = null;
+
+const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const dm = iso => iso.slice(8) + "/" + iso.slice(5, 7);
+const num = (v, digits = 0) => v == null ? "–" : Number(v).toLocaleString("vi-VN", { maximumFractionDigits: digits });
+const row = (cells, empty) => cells.length ? cells.join("") : `<tr><td colspan="${empty}" class="muted">Không có dữ liệu</td></tr>`;
+
+function render(s) {
+  const t = s.totals, r = s.range;
+  form.date_from.value = r.from; form.date_to.value = r.to; today = r.today;
+  const q = new URLSearchParams({ date_from: r.from, date_to: r.to });
+  $("dlXlsx").href = "/api/v1/reports/export/report.xlsx?" + q;
+  $("dlLogs").href = "/api/v1/reports/export/logs.csv?" + q;
+  $("dlAlerts").href = "/api/v1/reports/export/alerts.csv?" + q;
+  const rangeText = `${dm(r.from)}/${r.from.slice(0, 4)} – ${dm(r.to)}/${r.to.slice(0, 4)} (${r.days} ngày, UTC${r.utc_offset_hours >= 0 ? "+" : ""}${r.utc_offset_hours})`;
+  $("rangeInfo").textContent = rangeText;
+  $("printRange").textContent = "Khoảng thời gian: " + rangeText + ". Lập lúc " + r.generated_at + ".";
+  $("footnote").textContent = `Lập lúc ${r.generated_at} (UTC${r.utc_offset_hours >= 0 ? "+" : ""}${r.utc_offset_hours}). "Lượt vào" tính theo kết quả quét mặt; thẻ bị từ chối ngay ở bước thẻ cũng được tính là một lượt từ chối.`;
+
+  const denied = t.denied + t.timeouts;
+  const stat = (n, label, cls = "") => `<div class="stat"><div class="n ${cls}">${n}</div><div class="l">${label}</div></div>`;
+  $("kpis").innerHTML =
+    stat(num(t.entries), "Lượt vào hợp lệ") +
+    stat(num(denied), "Từ chối + hết giờ", denied ? "bad-text" : "") +
+    stat(t.success_rate == null ? "–" : (t.success_rate * 100).toFixed(1).replace(".", ",") + "%", "Tỉ lệ thành công") +
+    stat(num(t.unique_users), "Sinh viên đã vào") +
+    stat(num(t.exit_button) + " / " + num(t.remote_open), "Nút trong / mở từ xa") +
+    stat(t.avg_duration_ms == null ? "–" : num(t.avg_duration_ms / 1000, 1) + " s", "Thời gian xác thực TB") +
+    stat(num(t.avg_confidence, 2), "Độ khớp mặt TB") +
+    stat(num(s.alerts.total) + (s.alerts.open ? ` <span class="bad-text" style="font-size:15px">(${s.alerts.open} chưa xử lý)</span>` : ""), "Cảnh báo an ninh");
+
+  barChart($("chartDay"), s.by_day.map(d => dm(d.date)), [
+    { name: "Cho vào", color: "var(--ok)", values: s.by_day.map(d => d.entries) },
+    { name: "Từ chối + hết giờ", color: "var(--bad)", values: s.by_day.map(d => d.denied + d.timeouts) },
+    { name: "Nút trong / mở từ xa", color: "var(--primary)", values: s.by_day.map(d => d.exit_button + d.remote_open) },
+  ], { stacked: true, ariaLabel: "Lượt ra vào theo ngày" });
+  barChart($("chartHour"), s.by_hour.map(h => String(h.hour).padStart(2, "0") + "h"), [
+    { name: "Cho vào", color: "var(--ok)", values: s.by_hour.map(h => h.entries) },
+    { name: "Từ chối + hết giờ", color: "var(--bad)", values: s.by_hour.map(h => h.denied) },
+  ], { stacked: true, ariaLabel: "Phân bố lượt ra vào theo giờ" });
+
+  const maxReason = Math.max(1, ...s.denial_reasons.map(x => x.count));
+  $("reasons").innerHTML = row(s.denial_reasons.map(x => `<tr><td>${esc(x.label)}</td><td>${x.count}</td>
+    <td style="width:45%"><div class="hbar"><div class="bar" style="width:${(x.count / maxReason * 100).toFixed(0)}%"></div></div></td></tr>`), 3);
+  $("topUsers").innerHTML = row(s.top_users.map(u => `<tr><td>${esc(u.student_id)}</td><td>${esc(u.full_name)}</td><td>${u.entries}</td><td>${u.denied}</td></tr>`), 4);
+  $("topDenied").innerHTML = row(s.top_denied.map(u => `<tr><td>${esc(u.student_id)}</td><td>${esc(u.full_name)}</td><td class="bad-text">${u.denied}</td><td>${u.entries}</td></tr>`), 4);
+
+  const a = s.alerts;
+  $("alertSummary").innerHTML = a.total ? `
+    <p>Tổng <b>${a.total}</b> &middot; chưa xử lý <b class="${a.open ? "bad-text" : ""}">${a.open}</b> &middot; đã xử lý <b>${a.resolved}</b>
+      ${a.avg_resolve_minutes != null ? `<br><span class="muted">Thời gian xử lý trung bình: ${num(a.avg_resolve_minutes, 1)} phút</span>` : ""}</p>
+    <table><tbody>${a.by_reason.map(x => `<tr><td>${esc(x.label)}</td><td>${x.count}</td></tr>`).join("")}</tbody></table>
+    <p class="muted" style="margin-bottom:0">Mức cao: ${a.by_level.high} &middot; Trung bình: ${a.by_level.medium}. <a href="/alerts">Mở trang cảnh báo</a></p>`
+    : '<p class="muted">Không có cảnh báo nào trong khoảng này.</p>';
+}
+
+async function load(params) {
+  try { render(await api("/api/v1/reports/summary?" + new URLSearchParams(params || {}))); }
+  catch (e) { toast(e.message, true); }
+}
+form.onsubmit = e => { e.preventDefault(); load({ date_from: form.date_from.value, date_to: form.date_to.value }); };
+document.querySelectorAll("[data-quick]").forEach(b => b.onclick = () => {
+  const k = b.dataset.quick;
+  const from = k === "today" ? today : k === "month" ? today.slice(0, 8) + "01" : addDays(today, -(Number(k) - 1));
+  load({ date_from: from, date_to: today });
+});
+load();
+</script>
+{% endblock %}

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Cảnh báo an ninh{% endblock %}
+{% block content %}
+<h1>Cảnh báo an ninh</h1>
+<div class="card">
+  <form id="f" class="row">
+    <label>Mức độ
+      <select name="level"><option value="">Tất cả</option><option value="high">Cao</option><option value="medium">Trung bình</option></select>
+    </label>
+    <label>Loại
+      <select name="reason"><option value="">Tất cả</option></select>
+    </label>
+    <label class="inline" style="padding-bottom:8px"><input type="checkbox" name="include_resolved" value="true"> Hiện cả cảnh báo đã xử lý</label>
+  </form>
+</div>
+<div class="card">
+  <div id="list"></div>
+  <div class="row" style="margin-top:12px">
+    <button class="secondary small" id="prev">&larr; Trước</button>
+    <span class="muted" id="pageInfo"></span>
+    <button class="secondary small" id="next">Sau &rarr;</button>
+  </div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const REASON = { spoof_pad: "Giả mạo (ảnh in/màn hình)", challenge_failed: "Không qua thách thức người thật", face_mismatch: "Sai khuôn mặt", revoked_card_used: "Dùng thẻ đã thu hồi" };
+const PAGE = 20;
+const form = document.getElementById("f");
+const list = document.getElementById("list");
+let offset = 0, total = 0, resolving = null;      // resolving: id cảnh báo đang mở ô nhập ghi chú (không vẽ lại khi đang gõ)
+
+form.reason.innerHTML += Object.entries(REASON).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+
+function query() {
+  const p = new URLSearchParams({ limit: PAGE, offset });
+  new FormData(form).forEach((v, k) => v && p.set(k, v));
+  return p;
+}
+
+function item(a) {
+  const done = a.resolved
+    ? `<div class="muted">Đã xử lý bởi <b>${esc(a.resolved_by || "?")}</b>${a.resolved_at ? " lúc " + fmtTime(a.resolved_at) : ""}${a.resolution_note ? " &mdash; " + esc(a.resolution_note) : ""}</div>`
+    : "";
+  const action = a.resolved ? "" : resolving === a.id
+    ? `<form class="resolve-form row" data-id="${a.id}" style="margin-top:8px">
+         <input name="note" maxlength="300" placeholder="Ghi chú xử lý (tùy chọn): đã hỏi sinh viên, nhầm thẻ..." style="flex:1;min-width:220px" autofocus>
+         <button class="small" type="submit">Xác nhận</button><button class="small secondary" type="button" data-cancel>Hủy</button>
+       </form>`
+    : `<button class="small" data-resolve="${a.id}">Đánh dấu đã xử lý</button>`;
+  return `<div class="alert-item">
+    ${a.snapshot_url ? `<a href="${a.snapshot_url}" target="_blank"><img src="${a.snapshot_url}" alt="Ảnh nghi phạm"></a>` : ""}
+    <div style="flex:1">
+      <span class="badge ${a.level === "high" ? "bad" : "warn"}">${a.level === "high" ? "Cao" : "Trung bình"}</span>
+      <b>${esc(REASON[a.reason] || a.reason)}</b> ${a.student_id ? "&middot; " + esc(a.student_id) : ""}
+      <div>${esc(a.message)}</div><div class="muted">${fmtTime(a.ts)}</div>${done}${action}
+    </div>
+  </div>`;
+}
+
+let current = [];
+function draw() {
+  list.innerHTML = current.length ? current.map(item).join("") : '<p class="muted">Không có cảnh báo.</p>';
+  const input = list.querySelector("input[name=note]");
+  if (input) input.focus();
+}
+
+async function load() {
+  if (resolving !== null) return;
+  try {
+    const page = await apiPage("/api/v1/alerts?" + query());
+    total = page.total;
+    if (!page.items.length && offset > 0) { offset = Math.max(0, offset - PAGE); return load(); }    // trang cuối vừa hết
+    current = page.items;
+    draw();
+    document.getElementById("pageInfo").textContent = total ? `${offset + 1}-${Math.min(offset + PAGE, total)} / ${total}` : "";
+  } catch (e) { toast(e.message, true); }
+}
+
+list.addEventListener("click", e => {
+  if (e.target.dataset.resolve) { resolving = Number(e.target.dataset.resolve); draw(); }
+  if (e.target.hasAttribute("data-cancel")) { resolving = null; load(); }
+});
+list.addEventListener("submit", async e => {
+  e.preventDefault();
+  const note = new FormData(e.target).get("note");
+  try { await api(`/api/v1/alerts/${e.target.dataset.id}/resolve`, { method: "POST", body: { note } }); toast("Đã đánh dấu đã xử lý"); }
+  catch (err) { toast(err.message, true); }
+  resolving = null; load();
+});
+
+form.onchange = () => { offset = 0; load(); };
+document.getElementById("prev").onclick = () => { offset = Math.max(0, offset - PAGE); load(); };
+document.getElementById("next").onclick = () => { if (offset + PAGE < total) { offset += PAGE; load(); } };
+document.addEventListener("lab:notify", e => { if (e.detail.kind === "alert" && offset === 0) load(); });   // cảnh báo mới hiện ngay
+load(); setInterval(load, 15000);
+</script>
+{% endblock %}

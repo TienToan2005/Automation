@@ -1,0 +1,7 @@
+faces_db
+embeddings
+tools
+tests
+__pycache__
+results
+eval_data

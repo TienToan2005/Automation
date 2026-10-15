@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy>=2.0
+pydantic-settings
+pyjwt
+jinja2
+python-multipart
+requests
+numpy
+openpyxl            # xuất báo cáo Excel (không có thì chỉ xuất CSV được)
+
+# Chỉ cần để chạy test
+pytest
+httpx
