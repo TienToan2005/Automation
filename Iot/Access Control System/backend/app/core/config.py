@@ -21,9 +21,9 @@ class Settings(BaseSettings):
     service_token: str = "dev-service-token"      # AI Service -> Backend (X-Service-Token)
     device_token: str = "dev-device-token"        # ESP32 -> Backend (X-Device-Token)
 
-    ai_base_url: str = "http://localhost:5050"
+    ai_base_url: str = "http://127.0.0.1:5050"    # không dùng "localhost": Windows thử IPv6 trước, mỗi lần gọi AI chậm thêm ~2 giây
     ai_timeout_s: float = 3.0
-    face_timeout_s: int = 16                      # khớp SCAN_TIMEOUT_S của AI Service
+    face_timeout_s: int = 30                      # khớp SCAN_TIMEOUT_S của AI Service
     min_face_images: int = 3
 
     default_device_id: str = "door-esp32-01"
@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from: str = ""                           # bỏ trống = dùng smtp_user
     smtp_to: str = ""                             # nhiều người nhận ngăn cách bằng dấu phẩy
+
+    # ThingsBoard (tùy chọn): https://thingsboard.cloud/api/v1/<TOKEN>/telemetry. Để trống = tắt. Xem services/thingsboard.py
+    thingsboard_url: str = ""
 
     export_max_rows: int = 200_000                # trần số dòng nhật ký khi xuất CSV
 

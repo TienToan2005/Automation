@@ -36,11 +36,11 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-const RESULT_LABEL = { granted: "Cho vào", denied: "Từ chối", pending: "Đang xác thực", timeout: "Hết giờ", cancelled: "Đã hủy" };
+const RESULT_LABEL = { granted: "Thành công", denied: "Từ chối", pending: "Đang xác thực", timeout: "Hết giờ", cancelled: "Đã hủy" };
 const EVENT_LABEL = { card_scan: "Quẹt thẻ", face_verify: "Quét mặt", exit_button: "Nút trong", remote_open: "Mở từ xa", admin_action: "Quản trị" };
 
 function badge(result) {
-  const cls = result === "granted" ? "ok" : result === "pending" ? "warn" : "bad";
+  const cls = result === "granted" ? "good" : result === "pending" ? "warn" : "bad";
   return `<span class="badge ${cls}">${esc(RESULT_LABEL[result] || result)}</span>`;
 }
 
@@ -136,97 +136,200 @@ function setupFaceEnroll(userId, onDone) {
   };
 }
 
-// Thêm người dùng + quét mặt trực tiếp bằng webcam (WebRTC).
-// Mỗi lần bấm "Chụp & Quét": POST /api/v1/face/scan (Backend -> AI /api/ai/embed) để kiểm tra ngay;
-// ảnh đạt được giữ lại, đủ số lượng thì "Thêm người dùng" gửi form + ảnh đến POST /api/v1/users/enroll.
-function setupLiveEnroll(form, minImages, onDone) {
+// Thêm người dùng + quét khuôn mặt có hướng dẫn (kiểu eKYC ngân hàng): nhìn thẳng -> quay trái -> quay phải -> chớp mắt.
+// Camera của trình duyệt (WebRTC) gửi liên tục từng khung hình tới POST /api/v1/face/guide/frame (Backend -> AI /api/ai/enroll/frame).
+// AI kiểm tra chất lượng + tư thế và báo khung nào vừa hoàn thành bước nào (passed_step); trang giữ đúng khung đó làm ảnh đăng ký.
+// Đủ các bước thì "Thêm người dùng" gửi form + ảnh tới POST /api/v1/users/enroll (AI kiểm tra lại từng ảnh rồi lấy trung bình vector).
+function setupGuidedEnroll(form, minImages, onDone) {
   const $ = id => document.getElementById(id);
-  const video = $("cam"), box = $("camBox"), status = $("scanStatus");
-  const btnStart = $("camStart"), btnStop = $("camStop"), btnShot = $("camShot"), btnAdd = $("addSubmit");
-  const shots = [];          // chỉ chứa ảnh đã được AI chấp nhận: { blob, url }
-  let stream = null, busy = false;
+  const video = $("cam"), stage = $("camBox"), status = $("scanStatus"), instruction = $("scanInstruction"), hintEl = $("scanHint");
+  const btnStart = $("scanStart"), btnRetry = $("scanRetry"), btnSkip = $("scanSkip"), btnStop = $("camStop"), btnAdd = $("addSubmit");
+  const FRAME_INTERVAL_MS = 120, FRAME_WIDTH = 960;
+  const canvas = document.createElement("canvas");
+  const shots = [];            // { step, label, blob, url }: đúng khung đã hoàn thành từng bước
+  let stream = null, sessionId = null, running = false, busy = false, finished = false, runToken = 0, flashUntil = 0, lastState = null;
 
   const say = (text, kind = "") => { status.textContent = text; status.className = "scan-status " + kind; };
-  const refresh = () => {
-    $("shots").innerHTML = shots.map((s, i) => `<div class="shot ok"><img src="${s.url}" alt="Ảnh ${i + 1}"><button type="button" data-i="${i}" title="Xóa ảnh">×</button></div>`).join("");
-    $("shots").querySelectorAll("button").forEach(b => b.onclick = () => { URL.revokeObjectURL(shots[+b.dataset.i].url); shots.splice(+b.dataset.i, 1); refresh(); });
-    $("okCount").textContent = shots.length;
-    btnAdd.disabled = busy || shots.length < minImages;
-    btnShot.disabled = busy || !stream || shots.length >= 8;
-  };
-  const setBusy = v => { busy = v; refresh(); };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const errCode = e => e && e.data && e.data.detail && e.data.detail.code;
 
-  // Tắt hẳn camera để nhả thiết bị (AI Service cũng cần đọc cùng webcam khi có phiên quét thẻ)
+  // ---------- hiển thị ----------
+  function renderShots() {
+    $("shots").innerHTML = shots.map(s => `<figure class="shot ok"><img src="${s.url}" alt="${esc(s.label)}"><figcaption>${esc(s.label)}</figcaption></figure>`).join("");
+  }
+  function renderControls() {
+    const timedOut = !!(lastState && lastState.step_timeout);
+    btnStart.hidden = running || busy;                       // đang quét: chỉ còn nút Dừng
+    btnStart.textContent = shots.length || finished ? "Quét lại từ đầu" : "Bắt đầu quét khuôn mặt";
+    btnStop.hidden = !running;
+    btnRetry.hidden = !timedOut;
+    btnSkip.hidden = !(lastState && lastState.step === "blink" && (timedOut || (running && lastState.time_left <= 8)));
+    btnAdd.disabled = busy || !finished || shots.length < minImages;
+  }
+  function render(r) {
+    lastState = r;
+    stage.dataset.step = r.done ? "" : (r.step || "");
+    stage.classList.toggle("complete", !!r.done);
+    stage.querySelectorAll(".seg").forEach((el, i) => el.setAttribute("class", "seg " + ((r.steps[i] || {}).state || "pending")));
+    $("scanSteps").innerHTML = r.steps.map((s, i) => `<li class="${esc(s.state)}">${i + 1}. ${esc(s.label)}${s.state === "done" ? " ✓" : s.state === "skipped" ? " (bỏ qua)" : ""}</li>`).join("");
+    $("okCount").textContent = `${r.steps.filter(s => s.state === "done" || s.state === "skipped").length}/${r.total}`;
+    instruction.textContent = r.instruction;
+    if (performance.now() >= flashUntil) {            // dòng "✓ đã chụp" giữ ~1 giây trước khi nhường chỗ cho gợi ý
+      hintEl.className = "scan-hint";
+      hintEl.textContent = r.message || (running && !r.done && r.time_left > 0 && r.time_left <= 5 ? `Còn ${r.time_left} giây` : "");
+    }
+    renderControls();
+  }
+  function idle() {
+    lastState = null; flashUntil = 0;
+    stage.dataset.step = ""; stage.classList.remove("complete");
+    stage.querySelectorAll(".seg").forEach(el => el.setAttribute("class", "seg pending"));
+    $("scanSteps").innerHTML = ""; $("okCount").textContent = "0/4";
+    instruction.textContent = 'Bấm "Bắt đầu quét khuôn mặt"';
+    hintEl.className = "scan-hint"; hintEl.textContent = "";
+    renderControls();
+  }
+  function resetShots() {
+    shots.forEach(s => URL.revokeObjectURL(s.url));
+    shots.length = 0; renderShots();
+  }
+
+  // ---------- camera ----------
   const stopCam = () => {
-    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (stream) stream.getTracks().forEach(t => t.stop());       // nhả hẳn camera: AI Service cũng cần đọc webcam khi có phiên quét thẻ
     stream = null; video.srcObject = null;
-    box.classList.remove("live");
-    btnStop.style.display = "none"; btnStart.style.display = "";
-    refresh();
+    stage.classList.remove("live");
   };
-  btnStart.onclick = async () => {
+  async function openCamera() {
     if (stream) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      return say("Trình duyệt không cho dùng camera. Hãy mở trang qua http://localhost:... hoặc HTTPS.", "bad");
+      throw Object.assign(new Error("Trình duyệt không cho dùng camera. Hãy mở trang qua http://localhost:... hoặc HTTPS."), { friendly: true });
     }
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false });
-      video.srcObject = stream;
-      box.classList.add("live"); btnStop.style.display = ""; btnStart.style.display = "none";
-      say('Đặt mặt vào khung tròn rồi bấm "Chụp & Quét khuôn mặt".');
-      refresh();
-    } catch (e) {
-      const msg = e.name === "NotAllowedError" ? "Bạn đã chặn quyền camera cho trang này"
-        : e.name === "NotFoundError" ? "Không tìm thấy camera"
-        : e.name === "NotReadableError" ? "Camera đang được chương trình khác sử dụng (có thể là AI Service)" : e.message;
-      say("Không mở được camera: " + msg, "bad");
-    }
-  };
-  btnStop.onclick = stopCam;
-  window.addEventListener("pagehide", stopCam);
-  document.addEventListener("visibilitychange", () => { if (document.hidden) stopCam(); });
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false });
+    video.srcObject = stream;
+    stage.classList.add("live");
+    if (!video.videoWidth) await Promise.race([new Promise(res => { video.onloadedmetadata = res; }), sleep(5000)]);
+  }
+  const cameraError = e => e.friendly ? e.message
+    : e.name === "NotAllowedError" ? "Bạn đã chặn quyền camera cho trang này"
+    : e.name === "NotFoundError" ? "Không tìm thấy camera"
+    : e.name === "NotReadableError" ? "Camera đang được chương trình khác sử dụng (có thể là AI Service)" : e.message;
+  function grab() {
+    if (!video.videoWidth) return Promise.resolve(null);
+    const w = Math.min(video.videoWidth, FRAME_WIDTH), h = Math.round(video.videoHeight * w / video.videoWidth);
+    canvas.width = w; canvas.height = h;
+    canvas.getContext("2d").drawImage(video, 0, 0, w, h);          // khung gốc (không lật gương) để AI phân tích
+    return new Promise(r => canvas.toBlob(r, "image/jpeg", 0.85));
+  }
 
-  btnShot.onclick = async () => {
-    if (!stream || busy || !video.videoWidth) return say("Camera chưa sẵn sàng, đợi một chút rồi thử lại.", "bad");
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0);          // khung gốc (không lật) để AI phân tích
-    const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.92));
-    setBusy(true); say("Đang xử lý ảnh, vui lòng giữ yên...", "busy");
+  // ---------- phiên quét ----------
+  function finish() {
+    running = false; finished = true; stopCam();
+    say('Hoàn tất quét khuôn mặt. Bấm "Thêm người dùng" để lưu.', "ok");
+    renderControls();
+  }
+  function fail(e) {
+    runToken++; running = false; stopCam();
+    const code = errCode(e);
+    say(code === "ai_unavailable"
+        ? 'AI Service chưa chạy. Mở PowerShell, chạy ai_service\\start_ai.ps1, đợi dòng "HỆ THỐNG AI SẴN SÀNG" rồi bấm Bắt đầu lại.'
+        : code === "session_expired" ? 'Phiên quét đã hết hạn. Bấm "Bắt đầu quét khuôn mặt" để làm lại.'
+        : "Lỗi: " + e.message, "bad");
+    renderControls();
+  }
+  function onFrameResult(r, blob) {
+    if (r.passed_step) {
+      const label = (r.steps.find(s => s.id === r.passed_step) || {}).label || r.passed_step;
+      const i = shots.findIndex(s => s.step === r.passed_step);
+      if (i >= 0) { URL.revokeObjectURL(shots[i].url); shots.splice(i, 1); }
+      shots.push({ step: r.passed_step, label, blob, url: URL.createObjectURL(blob) });
+      renderShots();
+      hintEl.className = "scan-hint ok"; hintEl.textContent = `✓ ${label}: đã chụp`;
+      flashUntil = performance.now() + 900;
+    }
+    render(r);
+    if (r.done) return finish();
+    if (r.step_timeout) {
+      running = false;
+      say(`Chưa nhận được "${r.instruction}". Bấm "Thử lại bước này".`, "bad");
+      renderControls();
+    }
+  }
+  async function loop(token) {
+    while (running && token === runToken) {
+      const t0 = performance.now();
+      const blob = await grab();
+      if (!blob) { await sleep(100); continue; }
+      let r;
+      try {
+        const fd = new FormData(); fd.append("session_id", sessionId); fd.append("image", blob, "frame.jpg");
+        r = await api("/api/v1/face/guide/frame", { method: "POST", body: fd });
+      } catch (e) { if (token === runToken) fail(e); return; }
+      if (token !== runToken) return;                              // đã dừng / bắt đầu lại trong lúc chờ AI
+      onFrameResult(r, blob);
+      await sleep(Math.max(0, FRAME_INTERVAL_MS - (performance.now() - t0)));
+    }
+  }
+  function run() { running = true; renderControls(); loop(++runToken); }
+
+  async function begin() {
+    runToken++; running = false; resetShots(); finished = false; idle();
+    busy = true; renderControls(); say("Đang mở camera...", "busy");
+    try { await openCamera(); }
+    catch (e) { busy = false; stopCam(); renderControls(); return say("Không mở được camera: " + cameraError(e), "bad"); }
+    say("Đang bắt đầu phiên quét...", "busy");
     try {
-      const fd = new FormData(); fd.append("image", blob, "frame.jpg");
-      const r = await api("/api/v1/face/scan", { method: "POST", body: fd });
-      if (r.ok) {
-        shots.push({ blob, url: URL.createObjectURL(blob) });
-        say(shots.length >= minImages
-          ? `Thành công: ảnh hợp lệ (${shots.length}). Đã đủ ảnh, có thể bấm "Thêm người dùng".`
-          : `Thành công: ảnh hợp lệ (${shots.length}/${minImages}). Hãy chụp thêm, hơi xoay mặt nhẹ.`, "ok");
-      } else {
-        say("Lỗi: " + r.message + (r.reason === "blurry" && r.sharpness != null ? ` (độ nét ${r.sharpness})` : ""), "bad");
-      }
-    } catch (e) { say("Lỗi: " + e.message, "bad"); }
-    finally { setBusy(false); }
-  };
+      const r = await api("/api/v1/face/guide/start", { method: "POST" });
+      sessionId = r.session_id;
+      render(r);
+    } catch (e) { busy = false; return fail(e); }
+    busy = false;
+    say("Làm theo hướng dẫn trên camera. Hệ thống tự chụp khi bạn làm đúng.");
+    run();
+  }
+  // "retry": làm lại bước hiện tại sau khi hết giờ; "skip": bỏ qua bước chớp mắt (camera quá chậm)
+  async function command(name) {
+    if (busy || !sessionId) return;
+    busy = true; renderControls();
+    try {
+      const fd = new FormData(); fd.append("session_id", sessionId); fd.append("command", name);
+      const r = await api("/api/v1/face/guide/frame", { method: "POST", body: fd });
+      busy = false;
+      render(r);
+      if (r.done) return finish();
+      say("Làm theo hướng dẫn trên camera. Hệ thống tự chụp khi bạn làm đúng.");
+      run();
+    } catch (e) { busy = false; fail(e); }
+  }
+  const stopAll = () => { runToken++; running = false; stopCam(); };
+
+  btnStart.onclick = begin;
+  btnRetry.onclick = () => command("retry");
+  btnSkip.onclick = () => command("skip");
+  btnStop.onclick = () => { stopAll(); say('Đã dừng. Bấm "Quét lại từ đầu" khi sẵn sàng.'); renderControls(); };
+  window.addEventListener("pagehide", stopAll);
+  document.addEventListener("visibilitychange", () => { if (document.hidden && (running || stream)) { stopAll(); say('Đã dừng vì bạn rời khỏi trang. Bấm "Quét lại từ đầu" khi sẵn sàng.'); renderControls(); } });
 
   form.onsubmit = async e => {
     e.preventDefault();
-    if (shots.length < minImages) return say(`Cần tối thiểu ${minImages} ảnh khuôn mặt hợp lệ.`, "bad");
+    if (busy) return;
+    if (!finished || shots.length < minImages) return say("Hãy hoàn thành các bước quét khuôn mặt trước.", "bad");
     const fd = new FormData(form);
     if (!fd.get("card_uid")) fd.delete("card_uid");
-    shots.forEach((s, i) => fd.append("images", s.blob, `face${i}.jpg`));
-    setBusy(true); btnAdd.textContent = "Đang lưu..."; say("Đang xử lý và lưu người dùng...", "busy");
+    shots.forEach((s, i) => fd.append("images", s.blob, `face${i}_${s.step}.jpg`));
+    busy = true; btnAdd.textContent = "Đang lưu..."; renderControls(); say("Đang xử lý và lưu người dùng...", "busy");
     try {
       const data = await api("/api/v1/users/enroll", { method: "POST", body: fd });
       toast(`Đã thêm ${data.user.full_name}, đăng ký khuôn mặt từ ${data.used_images} ảnh`);
       say("Thành công: đã thêm người dùng và lưu dữ liệu khuôn mặt.", "ok");
-      shots.forEach(s => URL.revokeObjectURL(s.url)); shots.length = 0;
-      form.reset(); stopCam(); onDone && onDone();
+      resetShots(); finished = false; form.reset(); idle();
+      onDone && onDone();
     } catch (err) {
       const errs = (err.data && err.data.detail && err.data.detail.errors) || [];
       say("Lỗi: " + err.message + (errs.length ? " — " + errs.map(x => `ảnh ${x.image}: ${x.message}`).join("; ") : ""), "bad");
-    } finally { btnAdd.textContent = "Thêm người dùng"; setBusy(false); }
+    } finally { btnAdd.textContent = "Thêm người dùng"; busy = false; renderControls(); }
   };
-  refresh();
+  idle();
 }
 
 

@@ -14,24 +14,38 @@
           <label>Phân quyền<select name="role"><option value="student">Sinh viên</option><option value="admin">Admin</option></select></label>
           <label class="full">Mật khẩu ban đầu<input name="password" type="password" minlength="6" required autocomplete="new-password"></label>
         </div>
-        <p class="muted" style="margin:14px 0 6px">Quét tối thiểu <b>{{ MIN_FACE_IMAGES }}</b> ảnh hợp lệ (nhìn thẳng, hơi xoay mặt nhẹ giữa các lần chụp, đủ sáng, chỉ một người trong khung). Ảnh chụp từ màn hình hoặc ảnh in sẽ bị từ chối.</p>
+        <p class="muted" style="margin:14px 0 6px">Quét khuôn mặt: làm theo hướng dẫn trên camera (nhìn thẳng, quay đầu sang trái, quay đầu sang phải, chớp mắt). Hệ thống tự chụp khi bạn làm đúng. Ảnh chụp từ màn hình hoặc ảnh in sẽ bị từ chối.</p>
         <div class="row">
           <button id="addSubmit" type="submit" disabled>Thêm người dùng</button>
-          <span class="muted">Đã quét hợp lệ <b id="okCount">0</b>/{{ MIN_FACE_IMAGES }}</span>
+          <span class="muted">Đã hoàn thành <b id="okCount">0/4</b> bước</span>
         </div>
       </div>
-      <div>
-        <div class="camera-box" id="camBox">
-          <span class="placeholder">Camera đang tắt</span>
-          <video id="cam" autoplay playsinline muted></video>
-          <div class="guide"></div>
+      <div class="face-scan">
+        <div class="scan-stage" id="camBox" data-step="">
+          <div class="scan-disc">
+            <span class="placeholder">Camera đang tắt</span>
+            <video id="cam" autoplay playsinline muted></video>
+            <span class="scan-done" aria-hidden="true">✓</span>
+          </div>
+          <svg class="ring" viewBox="0 0 200 200" aria-hidden="true">
+            <circle class="seg pending" cx="100" cy="100" r="95" stroke-dasharray="137 460" transform="rotate(-86 100 100)"/>
+            <circle class="seg pending" cx="100" cy="100" r="95" stroke-dasharray="137 460" transform="rotate(4 100 100)"/>
+            <circle class="seg pending" cx="100" cy="100" r="95" stroke-dasharray="137 460" transform="rotate(94 100 100)"/>
+            <circle class="seg pending" cx="100" cy="100" r="95" stroke-dasharray="137 460" transform="rotate(184 100 100)"/>
+          </svg>
+          <span class="scan-arrow left" aria-hidden="true">‹</span>
+          <span class="scan-arrow right" aria-hidden="true">›</span>
         </div>
-        <div class="row" style="margin-top:10px">
-          <button class="secondary" id="camStart" type="button">Bật camera</button>
-          <button id="camShot" type="button" disabled>Chụp &amp; Quét khuôn mặt</button>
-          <button class="secondary" id="camStop" type="button" style="display:none">Tắt camera</button>
+        <ul class="scan-steps" id="scanSteps" aria-label="Các bước quét khuôn mặt"></ul>
+        <div class="scan-instruction" id="scanInstruction" role="status" aria-live="polite">Bấm "Bắt đầu quét khuôn mặt"</div>
+        <div class="scan-hint" id="scanHint" aria-live="polite"></div>
+        <div class="row scan-actions">
+          <button id="scanStart" type="button">Bắt đầu quét khuôn mặt</button>
+          <button class="secondary" id="scanRetry" type="button" hidden>Thử lại bước này</button>
+          <button class="secondary" id="scanSkip" type="button" hidden>Bỏ qua bước chớp mắt</button>
+          <button class="secondary" id="camStop" type="button" hidden>Dừng</button>
         </div>
-        <div id="scanStatus" class="scan-status" role="status" aria-live="polite">Bật camera, rồi bấm "Chụp &amp; Quét khuôn mặt".</div>
+        <div id="scanStatus" class="scan-status" role="status" aria-live="polite">Điền thông tin bên trái, rồi bấm "Bắt đầu quét khuôn mặt".</div>
         <div id="shots" class="shots"></div>
       </div>
     </div>
@@ -56,7 +70,7 @@ async function load() {
     <td>${u.cards.map(c => esc(c.uid) + (c.status === "revoked" ? " (thu hồi)" : "")).join(", ")}</td>
     <td><a class="btn small" href="/users/${u.id}">Chi tiết</a></td></tr>`).join("");
 }
-setupLiveEnroll(document.getElementById("f"), {{ MIN_FACE_IMAGES }}, load);
+setupGuidedEnroll(document.getElementById("f"), {{ MIN_FACE_IMAGES }}, load);
 load();
 </script>
 {% endblock %}

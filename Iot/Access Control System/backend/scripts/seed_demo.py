@@ -1,4 +1,4 @@
-"""Nạp dữ liệu demo khớp với firmware Wokwi (thẻ A123, B456, C789).
+"""Nạp dữ liệu demo (thẻ A123, B456, C789; thử bằng lệnh `uid A123` trên Serial Monitor của firmware).
 
 Chạy từ thư mục backend:  python -m scripts.seed_demo
 
@@ -18,7 +18,7 @@ from app.main import seed_admin
 EMBEDDINGS = Path(__file__).resolve().parents[2] / "ai_service" / "embeddings"
 DEMO_PASSWORD = "123456"
 
-# (mã sinh viên, họ tên, UID thẻ nhập trên keypad Wokwi)
+# (mã sinh viên, họ tên, UID thẻ demo)
 STUDENTS = [
     ("B23DCAT286", "Sinh viên B23DCAT286", "A123"),
     ("B23DCAT296", "Sinh viên B23DCAT296", "B456"),

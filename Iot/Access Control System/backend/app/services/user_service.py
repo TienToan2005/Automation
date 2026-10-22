@@ -19,6 +19,23 @@ FACE_ERRORS = {
 MIN_PASSWORD = 6
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
+# Quét khuôn mặt có hướng dẫn: AI trả mã bước / mã gợi ý, chữ tiếng Việt hiển thị trên web nằm ở đây (cạnh FACE_ERRORS).
+GUIDE_STEPS = {                       # id bước -> (nhãn ngắn trên vòng tiến độ, câu hướng dẫn lớn)
+    "front": ("Nhìn thẳng", "Nhìn thẳng vào camera"),
+    "left": ("Quay trái", "Quay đầu sang trái"),
+    "right": ("Quay phải", "Quay đầu sang phải"),
+    "blink": ("Chớp mắt", "Hãy chớp mắt"),
+}
+GUIDE_DONE = "Hoàn tất quét khuôn mặt"
+GUIDE_HINTS = {
+    **FACE_ERRORS,
+    "blurry": "Ảnh bị mờ, hãy giữ yên đầu",
+    "too_far": "Hãy lại gần camera hơn",
+    "off_center": "Đưa mặt vào giữa khung tròn",
+    "not_front": "Nhìn thẳng vào camera",
+    "wrong_way": "Quay sang bên kia",
+}
+
 
 def _check_password(password: str) -> None:
     if len(password) < MIN_PASSWORD:
@@ -81,6 +98,39 @@ def scan_face(image: bytes) -> dict:
     res.pop("embedding", None)
     res["message"] = "Khuôn mặt hợp lệ" if res.get("ok") else FACE_ERRORS.get(res.get("reason", ""), "Ảnh không đạt")
     return res
+
+
+def _guide_view(res: dict) -> dict:
+    """Thêm chữ tiếng Việt vào trạng thái quét của AI: nhãn từng bước, câu hướng dẫn của bước hiện tại, lời gợi ý."""
+    for s in res.get("steps", []):
+        s["label"] = GUIDE_STEPS.get(s["id"], (s["id"], s["id"]))[0]
+    step = res.get("step")
+    res["instruction"] = GUIDE_STEPS.get(step, (step, step))[1] if step else GUIDE_DONE
+    hint = res.get("hint") or ""
+    res["message"] = GUIDE_HINTS.get(hint, hint)
+    return res
+
+
+def _guide_call(fn, *args) -> dict:
+    """Gọi AI và đổi lỗi thành HTTPException có mã (code) để trang web phản ứng đúng."""
+    try:
+        return _guide_view(fn(*args))
+    except ai_client.AIUnavailable:
+        raise HTTPException(503, detail={"message": "AI Service không phản hồi, hãy bật AI Service rồi thử lại", "code": "ai_unavailable"})
+    except ai_client.AISessionExpired:
+        raise HTTPException(410, detail={"message": "Phiên quét đã hết hạn, hãy bắt đầu lại", "code": "session_expired"})
+    except ai_client.AIRejected:
+        raise HTTPException(400, "Không thực hiện được lệnh này ở bước hiện tại")
+
+
+def guide_start() -> dict:
+    return _guide_call(ai_client.enroll_start)
+
+
+def guide_frame(session_id: str, image: bytes | None, command: str | None) -> dict:
+    if image is not None and len(image) > MAX_IMAGE_BYTES:
+        raise HTTPException(413, FACE_ERRORS["invalid_image"])
+    return _guide_call(ai_client.enroll_frame, session_id, image, command)
 
 
 def create_user_with_face(db: Session, admin: User, data: UserCreate, images: list[bytes]) -> tuple[User, int, list[dict]]:

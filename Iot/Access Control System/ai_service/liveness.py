@@ -26,11 +26,15 @@ def _env_float(name, default):
 # Giá trị mặc định lấy từ số đo thật trên webcam (tools/calibrate_liveness.py, ~5 fps): quay đầu 30-40 độ cho
 # độ lệch 0.22-0.36, chớp mắt chỉ kéo EAR xuống 0.76-0.82 lần mức mở (khung hình bắt được phần nông của cú chớp).
 TURN_DELTA = _env_float("AI_TURN_DELTA", 0.15)           # độ lệch mũi so với tâm hai mắt (đơn vị: khoảng cách hai mắt)
-TURN_HOLD_FRAMES = 2                                     # số frame liên tiếp phải giữ tư thế quay đầu
+# Phải GIỮ tư thế quay đầu liên tục ít nhất ngần này giây. Tính theo thời gian chứ không theo số khung hình: ở 25 fps
+# hai khung chỉ là 0,08 giây, đủ để một cú giật của landmark (tay che mặt, kéo khẩu trang) bị tính là "đã quay".
+TURN_HOLD_S = _env_float("AI_TURN_HOLD_S", 0.35)
 YAW_LEFT_SIGN = 1 if _env_float("AI_YAW_LEFT_SIGN", 1) >= 0 else -1  # đặt -1 nếu camera bị lật gương
 BLINK_CLOSE_RATIO = _env_float("AI_BLINK_CLOSE_RATIO", 0.88)  # EAR < 88% mức mắt mở -> mắt nhắm
 BLINK_OPEN_RATIO = _env_float("AI_BLINK_OPEN_RATIO", 0.93)    # EAR > 93% mức mắt mở -> mắt mở lại
 BLINK_MAX_CLOSED_S = _env_float("AI_BLINK_MAX_CLOSED_S", 1.2) # nhắm lâu hơn mức này không phải chớp (cúi đầu, nhắm hẳn)
+# Dưới tốc độ này không ra thử thách chớp mắt: cú chớp chỉ ~0,2 s, ở 1-4 fps (camera ESP32 qua WiFi) hầu như không bắt được
+BLINK_MIN_FPS = _env_float("AI_BLINK_MIN_FPS", 6.0)
 BLINK_REF_FRAMES = 12                                    # số khung gần nhất để lấy mức "mắt mở" (trung vị)
 BASELINE_FRAMES = 3                                      # số frame đầu để lấy tư thế trung tính
 
@@ -39,6 +43,12 @@ CHALLENGES = {
     "turn_right": ("QUAY DAU SANG PHAI", "Quay đầu sang phải"),
     "blink": ("HAY CHOP MAT", "Hãy chớp mắt"),
 }
+
+
+def pick_challenge_type(fps=None):
+    """Chọn ngẫu nhiên một thử thách; bỏ chớp mắt khi tốc độ khung hình đo được thấp hơn BLINK_MIN_FPS."""
+    kinds = [k for k in CHALLENGES if not (k == "blink" and fps is not None and fps < BLINK_MIN_FPS)]
+    return secrets.choice(kinds)
 
 
 # ---------- Đặc trưng hình học từ landmark 68 điểm (iBUG) ----------
@@ -74,20 +84,28 @@ def face_turn_offset(face):
 
 # ---------- Mức 1: thách thức ngẫu nhiên ----------
 class LivenessChallenge:
-    """Một thách thức chọn ngẫu nhiên (secrets) cho mỗi phiên. update() trả về pending|passed|failed."""
+    """Một thách thức chọn ngẫu nhiên (secrets) cho mỗi phiên. update() trả về pending|passed|failed.
 
-    def __init__(self, timeout_s=8.0, ctype=None):
-        self.type = ctype or secrets.choice(list(CHALLENGES))
+    baseline: độ lệch mũi lúc nhìn thẳng đã đo sẵn (quét đăng ký đo ở bước "nhìn thẳng"), dùng cho thách thức quay đầu.
+    None = tự lấy từ vài khung đầu của thách thức (cửa ra vào: người dùng đang nhìn thẳng lúc thách thức bắt đầu)."""
+
+    def __init__(self, timeout_s=8.0, ctype=None, baseline=None, fps=None):
+        self.type = ctype or pick_challenge_type(fps)
         self.text, self.text_vi = CHALLENGES[self.type]
         self.deadline = time.time() + timeout_s
         self._baseline_samples = []
-        self._baseline = None
-        self._hold = 0
+        self._baseline = baseline
+        self._hold_since = None
         # chớp mắt
         self._ear_hist = deque(maxlen=BLINK_REF_FRAMES)   # EAR các khung mắt đang mở
         self._closed = False
         self._closed_at = 0.0
         self.debug = 0.0   # giá trị đang đo, hiển thị lên khung hình để hiệu chỉnh
+
+    @property
+    def head_turned(self):
+        """Đang quay đầu (thử thách quay) và đã lệch quá nửa ngưỡng: lúc này mặt nghiêng nên độ khớp danh tính tụt là bình thường."""
+        return self.type != "blink" and abs(self.debug) >= TURN_DELTA * 0.5
 
     def time_left(self):
         return max(0, int(self.deadline - time.time()))
@@ -112,8 +130,13 @@ class LivenessChallenge:
         self.debug = delta
         want_left = self.type == "turn_left"
         ok = delta >= TURN_DELTA if want_left else delta <= -TURN_DELTA
-        self._hold = self._hold + 1 if ok else 0
-        return "passed" if self._hold >= TURN_HOLD_FRAMES else "pending"
+        now = time.time()
+        if not ok:
+            self._hold_since = None
+            return "pending"
+        if self._hold_since is None:
+            self._hold_since = now
+        return "passed" if now - self._hold_since >= TURN_HOLD_S else "pending"
 
     def _update_blink(self, face):
         ear = face_ear(face)

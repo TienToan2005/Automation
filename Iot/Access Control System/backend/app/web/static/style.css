@@ -1,5 +1,6 @@
 :root { --bg:#f4f6f9; --card:#fff; --text:#1c2733; --muted:#6b7a8a; --line:#e2e8ef; --primary:#2563eb; --ok:#16a34a; --bad:#dc2626; --warn:#d97706; }
 * { box-sizing: border-box; }
+[hidden] { display:none !important; }
 body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); font-size:15px; }
 nav { background:#0f172a; color:#fff; display:flex; align-items:center; gap:4px; padding:0 20px; height:52px; }
 nav a { color:#cbd5e1; text-decoration:none; padding:8px 12px; border-radius:6px; }
@@ -46,15 +47,37 @@ video { width:100%; max-width:420px; border-radius:8px; background:#000; display
 @media (max-width:760px) { .enroll-grid { grid-template-columns:1fr; } }
 .enroll-grid .fields { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 .enroll-grid .fields .full { grid-column:1 / -1; }
-.camera-box { position:relative; background:#000; border-radius:8px; aspect-ratio:4/3; overflow:hidden; display:flex; align-items:center; justify-content:center; color:#94a3b8; font-size:13px; }
-.camera-box video { display:none; width:100%; height:100%; max-width:none; margin:0; border-radius:0; object-fit:cover; transform:scaleX(-1); }
-.camera-box .guide { display:none; position:absolute; inset:12% 28%; border:2px dashed rgba(255,255,255,.7); border-radius:50%; pointer-events:none; }
-.camera-box.live video, .camera-box.live .guide { display:block; }
-.camera-box.live .placeholder { display:none; }
+.face-scan { text-align:center; }
+.scan-stage { position:relative; width:min(100%, 340px); aspect-ratio:1; margin:0 auto; }
+.scan-disc { position:absolute; inset:6%; border-radius:50%; overflow:hidden; background:#0f172a; display:flex; align-items:center; justify-content:center; color:#94a3b8; font-size:13px; }
+.scan-disc video { display:none; position:absolute; inset:0; width:100%; height:100%; max-width:none; margin:0; border-radius:0; object-fit:cover; transform:scaleX(-1); }
+.scan-stage.live video { display:block; }
+.scan-stage.live .placeholder { display:none; }
+.scan-done { display:none; position:absolute; inset:0; align-items:center; justify-content:center; font-size:88px; color:#fff; background:var(--ok); }
+.scan-stage.complete .scan-done { display:flex; }
+.ring { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.ring .seg { fill:none; stroke:#cbd5e1; stroke-width:7; stroke-linecap:round; transition:stroke .25s; }
+.ring .seg.active { stroke:var(--primary); animation:seg-pulse 1.2s ease-in-out infinite; }
+.ring .seg.done { stroke:var(--ok); } .ring .seg.skipped { stroke:var(--warn); }
+.scan-arrow { position:absolute; top:50%; transform:translateY(-50%); font-size:56px; line-height:1; color:#fff; text-shadow:0 2px 10px rgba(0,0,0,.7); opacity:0; pointer-events:none; }
+.scan-arrow.left { left:9%; } .scan-arrow.right { right:9%; --nudge:6px; }
+.scan-stage[data-step="left"] .scan-arrow.left, .scan-stage[data-step="right"] .scan-arrow.right { opacity:1; animation:arrow-nudge 1s ease-in-out infinite; }
+.scan-steps { display:flex; flex-wrap:wrap; justify-content:center; gap:6px; margin:14px 0 0; padding:0; list-style:none; }
+.scan-steps li { padding:3px 10px; border-radius:999px; font-size:12px; background:#eef2f6; color:var(--muted); }
+.scan-steps li.active { background:#dbeafe; color:#1e40af; font-weight:600; }
+.scan-steps li.done { background:#dcfce7; color:#166534; } .scan-steps li.skipped { background:#fef3c7; color:#92400e; }
+.scan-instruction { margin:12px 0 2px; min-height:30px; font-size:20px; font-weight:700; }
+.scan-hint { min-height:21px; font-size:14px; color:var(--warn); } .scan-hint.ok { color:var(--ok); font-weight:600; }
+.scan-actions { justify-content:center; margin-top:10px; }
+@keyframes seg-pulse { 50% { opacity:.45; } }
+@keyframes arrow-nudge { 50% { transform:translateY(-50%) translateX(var(--nudge, -6px)); } }
+@media (prefers-reduced-motion:reduce) { .ring .seg.active, .scan-arrow { animation:none !important; } }
 .scan-status { margin-top:10px; padding:9px 12px; border-radius:8px; font-size:14px; background:#f1f5f9; color:var(--muted); }
 .scan-status.busy { background:#dbeafe; color:#1e40af; } .scan-status.ok { background:#dcfce7; color:#166534; } .scan-status.bad { background:#fee2e2; color:#991b1b; }
 .shot.ok img { border-color:var(--ok); border-width:2px; }
 .shots { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 0; }
+figure.shot { margin:0; } .shot figcaption { margin-top:3px; font-size:12px; color:var(--muted); text-align:center; }
+.face-scan .shots { justify-content:center; }
 button:disabled { opacity:.55; cursor:not-allowed; }
 
 /* Chuông thông báo + toast (admin) */

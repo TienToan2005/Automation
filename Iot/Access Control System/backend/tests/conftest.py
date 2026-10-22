@@ -23,6 +23,16 @@ EMB[0] = 1.0
 DEVICE = {"X-Device-Token": "dev-device-token"}
 SERVICE = {"X-Service-Token": "dev-service-token"}
 
+GUIDE_STEP_IDS = ("front", "left", "right", "blink")
+
+
+def guide_payload(step="front", index=0, **over):
+    """Trả lời của AI /api/ai/enroll/* (enroll_guide.GuidedEnroll.snapshot + quality): đủ các trường như thật."""
+    steps = [{"id": sid, "state": "done" if i < index else "active" if i == index else "pending"}
+             for i, sid in enumerate(GUIDE_STEP_IDS)]
+    return {"step": step, "step_index": index, "total": 4, "steps": steps, "hint": "", "passed_step": None,
+            "step_timeout": False, "time_left": 15, "done": False, "quality": {}, **over}
+
 
 @pytest.fixture(autouse=True)
 def _isolated_notifier(monkeypatch):
@@ -37,7 +47,14 @@ def _isolated_notifier(monkeypatch):
 @pytest.fixture()
 def fake_ai(monkeypatch):
     """AI Service giả: ghi lại các lần gọi, trả vector cố định."""
-    calls = {"trigger": [], "cancel": 0, "status": None}
+    calls = {"trigger": [], "cancel": 0, "status": None, "guide": [], "guide_reply": None}
+
+    def enroll_frame(session_id, image, command=None):
+        calls["guide"].append((session_id, image, command))
+        return calls["guide_reply"] or guide_payload()
+
+    monkeypatch.setattr(ai_client, "enroll_start", lambda: {"session_id": "S1", **guide_payload()})
+    monkeypatch.setattr(ai_client, "enroll_frame", enroll_frame)
     monkeypatch.setattr(ai_client, "trigger", lambda sid, sess, emb: calls["trigger"].append((sid, sess, len(emb))) or {})
     monkeypatch.setattr(ai_client, "cancel", lambda: calls.__setitem__("cancel", calls["cancel"] + 1))
     monkeypatch.setattr(ai_client, "status", lambda: calls["status"])

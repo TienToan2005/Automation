@@ -11,6 +11,14 @@ class AIUnavailable(Exception):
     pass
 
 
+class AISessionExpired(Exception):
+    """AI không còn phiên quét có hướng dẫn này (bỏ dở quá lâu hoặc AI vừa khởi động lại)."""
+
+
+class AIRejected(Exception):
+    """AI từ chối yêu cầu (lệnh không hợp lệ ở bước hiện tại, ảnh không giải mã được)."""
+
+
 def _url(path: str) -> str:
     return f"{settings.ai_base_url}{path}"
 
@@ -52,6 +60,35 @@ def embed(image_bytes: bytes) -> dict:
                           json={"image_base64": base64.b64encode(image_bytes).decode()})
         if r.status_code == 400:
             return {"ok": False, "reason": "invalid_image"}
+        r.raise_for_status()
+        return r.json()
+    except (requests.RequestException, ValueError) as e:
+        raise AIUnavailable(str(e))
+
+
+def enroll_start() -> dict:
+    """Mở phiên quét khuôn mặt có hướng dẫn trên AI (nhìn thẳng -> quay trái -> quay phải -> chớp mắt)."""
+    try:
+        r = requests.post(_url("/api/ai/enroll/start"), timeout=settings.ai_timeout_s)
+        r.raise_for_status()
+        return r.json()
+    except (requests.RequestException, ValueError) as e:
+        raise AIUnavailable(str(e))
+
+
+def enroll_frame(session_id: str, image: bytes | None, command: str | None = None) -> dict:
+    """Gửi một khung hình (và/hoặc lệnh "retry" | "skip") vào phiên quét; trả về trạng thái bước hiện tại."""
+    body: dict = {"session_id": session_id}
+    if image is not None:
+        body["image_base64"] = base64.b64encode(image).decode()
+    if command:
+        body["command"] = command
+    try:
+        r = requests.post(_url("/api/ai/enroll/frame"), timeout=8, json=body)
+        if r.status_code == 404:
+            raise AISessionExpired()
+        if r.status_code == 400:
+            raise AIRejected(str(r.json().get("detail", "")))
         r.raise_for_status()
         return r.json()
     except (requests.RequestException, ValueError) as e:

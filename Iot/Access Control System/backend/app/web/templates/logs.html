@@ -8,7 +8,7 @@
     <label>Đến ngày<input type="date" name="date_to"></label>
     {% if user.role == 'admin' %}<label>Mã SV<input name="student_id"></label>{% endif %}
     <label>Kết quả
-      <select name="result"><option value="">Tất cả</option><option value="granted">Cho vào</option><option value="denied">Từ chối</option><option value="timeout">Hết giờ</option><option value="pending">Đang xác thực</option></select>
+      <select name="result"><option value="">Tất cả</option><option value="granted">Thành công</option><option value="denied">Từ chối</option><option value="timeout">Hết giờ</option><option value="pending">Đang xác thực</option></select>
     </label>
     <label>Sự kiện
       <select name="event"><option value="">Tất cả</option><option value="card_scan">Quẹt thẻ</option><option value="face_verify">Quét mặt</option><option value="exit_button">Nút trong</option><option value="remote_open">Mở từ xa</option>{% if user.role == 'admin' %}<option value="admin_action">Quản trị</option>{% endif %}</select>

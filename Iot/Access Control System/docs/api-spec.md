@@ -310,6 +310,34 @@ Thất bại:
 
 `reason` thất bại: `no_face`, `multiple_faces`, `low_quality` (mặt nhỏ hoặc mờ), `spoof_suspected` (ảnh chụp từ màn hình hoặc ảnh in, chặn đăng ký bằng ảnh giả).
 
+**Backend -> AI: quét khuôn mặt có hướng dẫn (nhìn thẳng -> quay trái -> quay phải -> chớp mắt)** [ĐÃ CODE]
+
+`POST http://<AI_HOST>:5050/api/ai/enroll/start` mở một phiên quét, trả `{"session_id": "...", "step": "front", "step_index": 0, "total": 4, "steps": [...], "time_left": 15, "done": false}`.
+
+`POST http://<AI_HOST>:5050/api/ai/enroll/frame`
+
+```json
+{ "session_id": "...", "image_base64": "<một khung hình JPEG>", "command": "retry" }
+```
+
+`image_base64` và `command` đều tùy chọn. `command`: `retry` làm lại bước hiện tại sau khi hết giờ, `skip` bỏ qua bước chớp mắt (các bước khác không bỏ qua được). Trả về:
+
+```json
+{
+  "step": "left", "step_index": 1, "total": 4,
+  "steps": [{"id": "front", "state": "done"}, {"id": "left", "state": "active"}, {"id": "right", "state": "pending"}, {"id": "blink", "state": "pending"}],
+  "hint": "", "passed_step": "front", "step_timeout": false, "time_left": 15, "done": false,
+  "quality": {"face_width": 192.0, "det_score": 0.91, "sharpness": 180.2, "pad_score": 0.95},
+  "pose": {"offset": 0.061, "ear": 0.318}
+}
+```
+
+- `passed_step` khác `null`: **chính khung vừa gửi** đã hoàn thành bước đó, bên gọi giữ khung này làm ảnh đăng ký. Mỗi khung đều qua đủ kiểm tra của `/api/ai/embed` (một mặt, đủ lớn, đủ nét, chống ảnh giả) nên ảnh giữ lại chắc chắn qua được bước lưu.
+- `steps[].state`: `pending | active | done | skipped`. Mỗi bước có `AI_ENROLL_STEP_TIMEOUT_S` (15 giây) tính từ khung đầu tiên của bước; hết giờ thì `step_timeout` = true và phiên bỏ qua mọi khung cho tới khi gửi `command: retry`.
+- `hint` (mã gợi ý, rỗng nếu không có): `no_face`, `multiple_faces`, `low_quality`, `blurry`, `spoof_suspected`, `too_far`, `off_center`, `not_front`, `wrong_way`.
+- `pose.offset` (độ lệch mũi so với hai mắt, dương = sang trái của người dùng) và `pose.ear` (độ mở mắt) là số đo dùng để quyết định bước quay đầu / chớp mắt, cùng thước đo và ngưỡng với thách thức người thật ở cửa (`AI_TURN_DELTA`, `AI_BLINK_*`). Đặt `AI_ENROLL_DEBUG=1` để AI in mỗi khung ra console khi hiệu chỉnh.
+- Mã HTTP: 404 phiên không có hoặc hết hạn (`SESSION_TTL_S` = 120 giây không dùng), 400 lệnh hoặc ảnh không hợp lệ, 503 mô hình chưa nạp xong.
+
 **Dashboard -> Backend (CRUD)** [ĐỀ XUẤT, thành viên 3 và 4 chốt]
 
 | Method | Endpoint | Mục đích |
@@ -321,6 +349,8 @@ Thất bại:
 | POST | `/api/v1/users/{id}/revoke-card` | Báo mất, thu hồi thẻ |
 | POST | `/api/v1/users/{id}/reissue-card` | Cấp lại thẻ mới |
 | PUT | `/api/v1/users/{id}/face` | Cập nhật khuôn mặt |
+| POST | `/api/v1/face/guide/start` | Admin: mở phiên quét khuôn mặt có hướng dẫn (chuyển tiếp `/api/ai/enroll/start`, thêm nhãn bước và câu hướng dẫn tiếng Việt) |
+| POST | `/api/v1/face/guide/frame` | Admin: gửi một khung hình (multipart `session_id`, `image`, `command`) và nhận bước hiện tại, `instruction`, `message`, `passed_step`. Lỗi: 503 `ai_unavailable`, 410 `session_expired`, 400, 413 |
 | DELETE | `/api/v1/users/{id}` | Offboarding, xóa dữ liệu sinh trắc |
 | GET | `/api/v1/access-logs?from=&to=&result=&reason=` | Nhật ký ra vào (có ảnh nghi phạm) |
 | GET | `/api/v1/alerts` | Cảnh báo an ninh đang mở |
@@ -359,7 +389,7 @@ Backend nên gọi định kỳ và báo động khi `camera_ok` là `false` ho�
 - Đấu nối, hàn, lắp ráp: ESP32-S3, RFID RC522, relay, OLED, nút Exit, mạch hạ áp LM2596; đóng khung mô hình cửa.
 - Firmware: đọc UID qua SPI; phát stream camera OV5640 về máy chủ; hiển thị OLED (I2C); bắt nút Exit; điều khiển relay.
 - Giao tiếp: gửi UID lên Backend (luồng 1), nhận lệnh MQTT (luồng 5), gửi heartbeat (luồng 6).
-- Cần thêm cho khớp AI: hiển thị `challenge.text` và `hint` từ `/api/ai/status`. Phiên bản Wokwi hiện chỉ đọc `result` nên vẫn chạy, nhưng chưa hiển thị hướng dẫn.
+- Firmware mạch thật (`firmware/`) hiển thị `challenge.text` và `hint` từ `/api/ai/status` lên OLED.
 
 ### Thành viên 2: AI Core và Computer Vision (phần của bạn)
 
@@ -374,6 +404,7 @@ Backend nên gọi định kỳ và báo động khi `camera_ok` là `false` ho�
 | Đẩy sự kiện sang Backend và ThingsBoard (luồng 3 và 4) | Đã làm, đã kiểm thử với server giả |
 | Hỗ trợ GPU/CUDA | Đã chạy thử trên RTX 3050 4 GB với `onnxruntime-gpu==1.26.0` (CUDA 12 + cuDNN 9): ~125 ms -> ~21 ms mỗi khung (phát hiện + nhúng + landmark), tốn ~0,75 GB VRAM, vector GPU và CPU khớp (cosine 0,99999). `AI_USE_GPU=auto` (mặc định) tự dùng CUDA nếu có; `AI_GPU_MEM_MB` giới hạn vùng nhớ GPU (mặc định 1536). Bản `onnxruntime-gpu` từ 1.27 build cho CUDA 13, không dùng chung DLL với torch cu12x |
 | Đăng ký mặt trực tiếp trên web (`POST /api/v1/face/scan`, `POST /api/v1/users/enroll`) | Đã làm; `/api/ai/embed` kiểm tra 1 mặt, đủ lớn, đủ nét (`AI_MIN_SHARPNESS`, chưa hiệu chỉnh), không giả mạo |
+| Quét khuôn mặt có hướng dẫn kiểu eKYC trên web (`/api/ai/enroll/*`, `/api/v1/face/guide/*`) | Đã làm và đã kiểm thử; đã chạy thử trọn luồng trên Chrome thật với camera giả. **Ngưỡng quay đầu / chớp mắt chưa đo trên webcam thật của bạn** (bật `AI_ENROLL_DEBUG=1` để xem số đo) |
 | **Hiệu chỉnh trên camera thật** (`AI_TURN_DELTA`, `AI_PAD_THRESHOLD`, `AI_SIM_THRESHOLD`) | **Chưa làm, cần làm trước khi demo** |
 | Đo tỉ lệ từ chối nhầm người thật (FRR) và chấp nhận nhầm (FAR) | Chưa làm |
 | Cảnh báo người lạ lảng vảng khi rảnh | Chưa làm (xem luồng 4) |

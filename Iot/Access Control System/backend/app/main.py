@@ -14,6 +14,7 @@ from .core.database import Base, SessionLocal, add_missing_columns, engine
 from .core.security import hash_password
 from .models import Role, User
 from .services.device_registry import registry
+from .services import thingsboard  # noqa: F401  (đăng ký hook đẩy sự kiện lên ThingsBoard)
 from .services.notifier import notifier
 from .web import routes as web
 

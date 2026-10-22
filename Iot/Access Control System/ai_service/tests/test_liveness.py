@@ -41,9 +41,9 @@ def clock(monkeypatch):
     return c
 
 
-def run(ctype, series, clock, kind, dt=0.2):
+def run(ctype, series, clock, kind, dt=0.2, **kwargs):
     """Phát lại chuỗi giá trị; trả về chỉ số khung hình mà thách thức 'passed' (hoặc None)."""
-    ch = LivenessChallenge(timeout_s=60, ctype=ctype)
+    ch = LivenessChallenge(timeout_s=60, ctype=ctype, **kwargs)
     for i, v in enumerate(series):
         clock.t += dt
         if kind == "ear":
@@ -116,8 +116,66 @@ def test_staying_straight_does_not_pass_turn(clock):
     assert run("turn_left", STRAIGHT, clock, "turn") is None
 
 
+def test_given_baseline_counts_a_turn_that_starts_on_the_very_first_frame(clock):
+    # Người dùng đã quay phải ngay từ khung đầu. Không có mốc cho trước thì 3 khung đầu (đã quay) trở thành "tư thế thẳng"
+    # và độ lệch luôn ~0; có mốc cho trước (tư thế thẳng đo ở bước trước) thì quay được tính ngay.
+    turned_from_start = [-0.20, -0.22, -0.23] + [-0.23] * 6
+    assert run("turn_right", turned_from_start, clock, "turn") is None
+    assert run("turn_right", turned_from_start, clock, "turn", baseline=0.05) is not None
+
+
 def test_challenge_times_out(clock):
     ch = LivenessChallenge(timeout_s=3, ctype="blink")
     liveness.face_ear = lambda f: OPEN_EAR
     clock.t += 5
     assert ch.update(object()) == "failed"
+
+
+# --------- Quay đầu phải giữ theo THỜI GIAN (chống giật landmark do tay che mặt / kéo khẩu trang) ---------
+def test_brief_landmark_jump_is_not_a_turn(clock):
+    jump = [0.06] * 4 + [-0.30] * 4 + [0.06] * 4              # nhảy 4 khung ở 25 fps = 0,16 giây
+    assert run("turn_right", jump, clock, "turn", dt=0.04) is None
+
+
+def test_sustained_turn_passes_at_high_fps(clock):
+    series = [0.06] * 4 + [-0.30] * 25                         # giữ 1 giây ở 25 fps
+    assert run("turn_right", series, clock, "turn", dt=0.04) is not None
+
+
+def test_turn_hold_resets_when_pose_drops(clock):
+    series = [0.06] * 4 + ([-0.30] * 6 + [0.0]) * 3            # mỗi lần chỉ giữ 0,24 giây rồi tụt về thẳng
+    assert run("turn_right", series, clock, "turn", dt=0.04) is None
+
+
+def test_head_turned_flag(clock):
+    ch = LivenessChallenge(timeout_s=60, ctype="turn_right")
+    assert not ch.head_turned
+    liveness.face_turn_offset = lambda f: 0.06
+    for _ in range(5):
+        clock.t += 0.1
+        ch.update(object())
+    liveness.face_turn_offset = lambda f: -0.10                # lệch 0,16 so với tư thế thẳng
+    clock.t += 0.1
+    ch.update(object())
+    assert ch.head_turned
+    assert not LivenessChallenge(timeout_s=60, ctype="blink").head_turned
+
+
+# ---------- Chọn thử thách theo tốc độ khung hình (camera ESP32 qua WiFi chỉ 1-4 fps, không bắt được cú chớp ~0,2 s) ----------
+def test_low_fps_never_picks_blink():
+    kinds = {liveness.pick_challenge_type(fps=2.0) for _ in range(200)}
+    assert kinds == {"turn_left", "turn_right"}
+
+
+def test_high_fps_can_pick_every_challenge():
+    kinds = {liveness.pick_challenge_type(fps=15.0) for _ in range(300)}
+    assert kinds == {"turn_left", "turn_right", "blink"}
+
+
+def test_unknown_fps_keeps_all_challenges():
+    assert {liveness.pick_challenge_type(fps=None) for _ in range(300)} == {"turn_left", "turn_right", "blink"}
+
+
+def test_challenge_uses_fps_and_explicit_type_still_wins():
+    assert all(LivenessChallenge(fps=1.0).type != "blink" for _ in range(100))
+    assert LivenessChallenge(ctype="blink", fps=1.0).type == "blink"
