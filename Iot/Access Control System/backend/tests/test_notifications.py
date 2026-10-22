@@ -18,8 +18,13 @@ def feed(client, after=None):
     return r.json()
 
 
+def new_session(client):
+    """Mọi kết quả xác thực phải thuộc một phiên có thật (do quẹt thẻ tạo ra): thẻ A123 của fixture `student`."""
+    return scan(client).json()["data"]["session_id"]
+
+
 def spoof(client, sid=None):
-    return verify(client, sid or uuid.uuid4().hex[:12], result="denied", reason="spoof_pad",
+    return verify(client, sid or new_session(client), result="denied", reason="spoof_pad",
                   snapshot_jpeg_base64=base64.b64encode(b"jpegdata").decode())
 
 
@@ -46,7 +51,7 @@ def test_cursor_returns_only_newer_events(admin, student):
     spoof(admin)
     last = feed(admin)["last_id"]
     assert feed(admin, after=last)["items"] == []
-    verify(admin, uuid.uuid4().hex[:12], result="denied", reason="face_mismatch")
+    verify(admin, new_session(admin), result="denied", reason="face_mismatch")
     [n] = feed(admin, after=last)["items"]
     assert n["level"] == "medium" and n["id"] > last
 
@@ -149,24 +154,25 @@ def test_telegram_text_message_without_snapshot_and_local_time(admin, telegram):
     assert "(UTC+7)" in offline[0]["data"]["text"]
 
 
-def test_min_level_filter_and_cooldown(admin, telegram, monkeypatch):
+def test_min_level_filter_and_cooldown(admin, student, telegram, monkeypatch):
+    monkeypatch.setattr(settings, "mismatch_lock_threshold", 100)     # test này bắn nhiều face_mismatch liên tiếp, không phải test khóa thẻ
     heartbeat(admin)                                             # "online" là mức info: chỉ lên chuông web
     notifier.flush()
     assert telegram == []
 
     for _ in range(3):                                           # cùng loại, cùng người: chỉ đẩy một lần
-        verify(admin, uuid.uuid4().hex[:12], result="denied", reason="face_mismatch")
+        verify(admin, new_session(admin), result="denied", reason="face_mismatch")
     notifier.flush()
     assert len(telegram) == 1
     assert len([n for n in feed(admin)["items"] if n["kind"] == "alert"]) == 3        # web vẫn thấy cả ba
 
     monkeypatch.setattr(settings, "notify_cooldown_s", 0)
-    verify(admin, uuid.uuid4().hex[:12], result="denied", reason="face_mismatch")
+    verify(admin, new_session(admin), result="denied", reason="face_mismatch")
     notifier.flush()
     assert len(telegram) == 2
 
     monkeypatch.setattr(settings, "notify_min_level", "high")
-    verify(admin, uuid.uuid4().hex[:12], result="denied", reason="face_mismatch")      # medium < high
+    verify(admin, new_session(admin), result="denied", reason="face_mismatch")      # medium < high
     notifier.flush()
     assert len(telegram) == 2
 

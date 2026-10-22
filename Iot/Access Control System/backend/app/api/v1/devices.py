@@ -19,11 +19,14 @@ router = APIRouter(tags=["devices"])
 
 
 @router.post("/device/heartbeat", response_model=HeartbeatResponse, dependencies=[Depends(require_device)])
-def heartbeat(body: Heartbeat):
+def heartbeat(body: Heartbeat, db: Session = Depends(get_db)):
     events: list[str] = []
     commands = registry.heartbeat(body, events)
     for kind in events:                      # "online" khi mới kết nối / kết nối lại, "lockout" khi vừa bị khóa tạm
-        notifier.device_event(kind, body.device_id, body)
+        if kind in ("door_unlocked", "door_locked"):
+            access_service.log_door_event(db, body.device_id, kind == "door_unlocked")
+        else:
+            notifier.device_event(kind, body.device_id, body)
     return {"commands": commands}
 
 

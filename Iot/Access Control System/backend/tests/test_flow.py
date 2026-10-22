@@ -99,7 +99,11 @@ def test_full_access_flow(admin, student, fake_ai):
 
     # Gửi lại cùng phiên không ghi trùng
     verify(admin, sid)
-    assert admin.get("/api/v1/access-logs?event=face_verify").json()["total"] == 1
+    assert admin.get(f"/api/v1/access-logs?event=face_verify&student_id=B23DCAT286").json()["total"] == 2
+    own = [l for l in admin.get("/api/v1/access-logs?event=face_verify").json()["items"] if l["session_id"] == sid]
+    assert len(own) == 1, "gửi lại cùng phiên không ghi trùng"
+    # lần quẹt thẻ đầu bị lần quẹt thứ hai thay thế: phiên đó được đóng và ghi nhật ký, không treo vô thời hạn
+    assert [l["reason"] for l in admin.get("/api/v1/access-logs?event=face_verify").json()["items"] if l["session_id"] != sid] == ["superseded"]
 
 
 def test_card_scan_requires_device_token(client, student):
@@ -134,7 +138,7 @@ def test_revoked_card_raises_alert(admin, student):
 
 
 def test_spoof_creates_alert_with_snapshot(admin, student):
-    sid = uuid.uuid4().hex[:12]
+    sid = scan(admin).json()["data"]["session_id"]
     r = verify(admin, sid, result="denied", reason="spoof_pad",
                snapshot_jpeg_base64=base64.b64encode(b"jpegdata").decode())
     assert r.json()["action"] == "none"
@@ -145,8 +149,9 @@ def test_spoof_creates_alert_with_snapshot(admin, student):
 
 
 def test_granted_is_denied_if_account_suspended_mid_scan(admin, student):
+    sid = scan(admin).json()["data"]["session_id"]
     admin.post(f"/api/v1/users/{student}/suspend", json={"reason": "x"})
-    r = verify(admin, "late00000001")
+    r = verify(admin, sid)
     assert r.status_code == 403 and r.json()["action"] == "none"
 
 

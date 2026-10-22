@@ -1,6 +1,9 @@
+from datetime import timezone
+
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from ..core.clock import utcnow
 from ..core.config import settings
 from ..core.security import hash_password
 from ..models import Card, CardStatus, Role, User, UserStatus
@@ -200,6 +203,67 @@ def revoke_card(db: Session, admin: User, card_id: int) -> User:
         raise HTTPException(404, "Không tìm thấy thẻ")
     card.status = CardStatus.REVOKED
     audit(db, admin, f"Thu hồi thẻ {card.uid}", card.user.student_id)
+    db.commit()
+    return card.user
+
+
+def _need_reason(reason: str) -> str:
+    reason = (reason or "").strip()
+    if len(reason) < 5:
+        raise HTTPException(400, "Cần nhập lý do (tối thiểu 5 ký tự)")
+    return reason
+
+
+def _get_card(db: Session, card_id: int) -> Card:
+    card = db.get(Card, card_id)
+    if not card:
+        raise HTTPException(404, "Không tìm thấy thẻ")
+    return card
+
+
+def unlock_card(db: Session, admin: User, card_id: int, reason: str) -> User:
+    """Mở khóa tạm. Không xóa lịch sử phiên / nhật ký: chỉ đặt mốc đếm lại. Không làm sống lại thẻ thu hồi / vô hiệu."""
+    reason = _need_reason(reason)
+    card = _get_card(db, card_id)
+    if card.status in (CardStatus.REVOKED, CardStatus.DISABLED):
+        raise HTTPException(409, "Thẻ đã bị thu hồi / vô hiệu hóa, mở khóa tạm không có tác dụng")
+    card.locked_until, card.lock_reason = None, ""
+    card.failures_reset_at = utcnow()
+    audit(db, admin, f"Mở khóa thẻ {card.uid}: {reason}", card.user.student_id)
+    db.commit()
+    return card.user
+
+
+def disable_card(db: Session, admin: User, card_id: int, reason: str) -> User:
+    reason = _need_reason(reason)
+    card = _get_card(db, card_id)
+    if card.status == CardStatus.REVOKED:
+        raise HTTPException(409, "Thẻ đã thu hồi vĩnh viễn")
+    card.status = CardStatus.DISABLED
+    audit(db, admin, f"Vô hiệu hóa thẻ {card.uid}: {reason}", card.user.student_id)
+    db.commit()
+    return card.user
+
+
+def enable_card(db: Session, admin: User, card_id: int, reason: str) -> User:
+    reason = _need_reason(reason)
+    card = _get_card(db, card_id)
+    if card.status == CardStatus.REVOKED:
+        raise HTTPException(409, "Thẻ đã thu hồi vĩnh viễn, hãy cấp thẻ mới")
+    card.status = CardStatus.ACTIVE
+    audit(db, admin, f"Bật lại thẻ {card.uid}: {reason}", card.user.student_id)
+    db.commit()
+    return card.user
+
+
+def set_card_expiry(db: Session, admin: User, card_id: int, expires_at, reason: str) -> User:
+    reason = _need_reason(reason)
+    card = _get_card(db, card_id)
+    if expires_at is not None and expires_at.tzinfo is not None:
+        expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)     # DB lưu UTC không kèm tzinfo
+    card.expires_at = expires_at
+    audit(db, admin, f"Đặt hạn thẻ {card.uid} đến {expires_at.isoformat() if expires_at else 'không giới hạn'}: {reason}",
+          card.user.student_id)
     db.commit()
     return card.user
 

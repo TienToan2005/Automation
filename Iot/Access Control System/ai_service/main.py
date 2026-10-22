@@ -79,6 +79,64 @@ def appearance_changed(sim, front_sims, turn_progress):
     return abs(sim - float(np.median(front_sims))) > APPEARANCE_JUMP
 
 
+def classify_similarity(sim):
+    """match | inconclusive | mismatch. Chỉ độ khớp thấp RÕ RỆT mới là mismatch; vùng giữa không buộc tội ai
+    (khẩu trang, góc mặt, ánh sáng làm độ khớp tụt nhưng chưa chứng tỏ là người khác)."""
+    if sim >= SIMILARITY_THRESHOLD:
+        return "match"
+    return "mismatch" if sim < MISMATCH_CONFIRM_SIM else "inconclusive"
+
+
+def face_verifiable(det_score, sharpness):
+    """Khung đủ chất lượng để dùng kết luận khớp / không khớp. Khung rất mờ hoặc dò mặt kém tin cậy thì bỏ qua."""
+    return det_score >= VERIFY_MIN_DET_SCORE and sharpness >= VERIFY_MIN_SHARPNESS
+
+
+def pad_verdict(window_full, mean):
+    """pending (chưa đủ khung) | spoof (chắc chắn giả) | uncertain (chưa đủ tin cậy, KHÔNG buộc tội) | ok."""
+    if not window_full:
+        return "pending"
+    if mean < SPOOF_CONF_THRESHOLD:
+        return "spoof"
+    return "uncertain" if mean < PAD_THRESHOLD else "ok"
+
+
+def classify_timeout(faces_seen, quality_low, inconclusive, pad_uncertain, matched):
+    """Hết giờ mà chưa có kết luận: gọi đúng tên điều gì đã xảy ra để backend không tính nhầm là tấn công."""
+    if pad_uncertain:
+        return "pad_uncertain"
+    if faces_seen == 0:
+        return "face_not_detected"
+    if quality_low * 2 >= faces_seen:
+        return "face_quality_low"
+    if inconclusive > 0 and not matched:
+        return "face_inconclusive"
+    return "timeout"
+
+
+def report_attempt(ctx, reason, frame):
+    """Ghi một LẦN THỬ SAI (kèm ảnh) về backend mà KHÔNG đóng phiên: người dùng vẫn quét tiếp được tới hết giờ.
+    Giãn cách ATTEMPT_MIN_INTERVAL_S để camera nhanh không làm đầy nhật ký. Trả về True nếu đã gửi."""
+    now = time.time()
+    if now - ctx.last_attempt_at < ATTEMPT_MIN_INTERVAL_S:
+        return False
+    ctx.last_attempt_at = now
+    with state_lock:
+        if not ai_state["is_active"]:
+            return False
+        event = _build_event(frame, encode_snapshot(frame))
+        event.update(result="attempt", reason=reason)
+    print(f"[ATTEMPT] {event['student_id']} -> {reason} (chỉ ghi log, phiên vẫn mở) sim={event['confidence_score']}")
+    publish_event(event)
+    return True
+
+
+def timeout_reason(ctx):
+    if ctx is None:
+        return "timeout"
+    return classify_timeout(ctx.faces_seen, ctx.quality_low, ctx.inconclusive, ctx.pad_uncertain, ctx.last_match > 0)
+
+
 def pad_applicable(challenge):
     """PAD chỉ chấm điểm khung nhìn thẳng. Mô hình PAD quen mặt chính diện: lúc đang quay đầu theo thử thách (mặt nghiêng)
     nó cho điểm thấp, nếu vẫn tính thì người thật bị từ chối nhầm là giả mạo. Ảnh in không quay đầu được nên không lợi dụng được."""
@@ -98,6 +156,15 @@ MIN_FACE_WIDTH = int(_env("AI_MIN_FACE_WIDTH", "120"))     # "chặn cửa": m�
 PAD_THRESHOLD = float(_env("AI_PAD_THRESHOLD", "0.70"))    # trung bình điểm mặt thật tối thiểu
 PAD_WINDOW = 6
 PAD_MIN_FRAMES = 4
+# Kết luận chỉ khi có BẰNG CHỨNG. Mọi ngưỡng cần hiệu chỉnh bằng dữ liệu thật (tools/eval_far_frr.py), đây là giá trị khởi điểm.
+MISMATCH_CONFIRM_SIM = float(_env("AI_MISMATCH_CONFIRM_SIM", "0.35"))      # độ khớp DƯỚI mức này mới là "sai chủ thẻ" đã xác nhận;
+#                                                                            giữa MISMATCH_CONFIRM_SIM và SIMILARITY_THRESHOLD = chưa kết luận
+SPOOF_CONF_THRESHOLD = float(_env("AI_SPOOF_CONF_THRESHOLD", "0.40"))      # điểm PAD TB dưới mức này mới là giả mạo chắc chắn (spoof_pad);
+#                                                                            giữa mức này và PAD_THRESHOLD = chưa đủ tin cậy (không buộc tội)
+# Cổng chất lượng khi quét cửa NHẸ hơn lúc đăng ký: số đo thật trên camera ESP32 qua WiFi là độ nét 9-39, dò mặt 0.62-0.76
+ATTEMPT_MIN_INTERVAL_S = float(_env("AI_ATTEMPT_MIN_INTERVAL_S", "5"))     # giãn cách giữa hai lần ghi "sai mặt" của cùng một phiên
+VERIFY_MIN_DET_SCORE = float(_env("AI_VERIFY_MIN_DET_SCORE", "0.50"))
+VERIFY_MIN_SHARPNESS = float(_env("AI_VERIFY_MIN_SHARPNESS", "8"))
 SNAPSHOT_WIDTH = 480
 # ========================================================================================
 
@@ -424,6 +491,11 @@ class SessionCtx:
         self.pad = PadWindow(PAD_WINDOW, PAD_MIN_FRAMES)
         self.challenge = None
         self.last_match = 0.0     # lần cuối thấy mặt khớp chủ thẻ (khi nhìn thẳng)
+        self.faces_seen = 0       # số khung có đúng một mặt đủ lớn (để phân loại khi hết giờ)
+        self.quality_low = 0      # trong đó số khung quá mờ / dò mặt kém tin cậy
+        self.inconclusive = 0     # số khung có độ khớp ở vùng "chưa kết luận"
+        self.pad_uncertain = False
+        self.last_attempt_at = 0.0   # lần gần nhất ghi "sai mặt" (giãn cách để không làm đầy nhật ký)
         self.frame_times = deque(maxlen=20)   # thời điểm các khung gần nhất, để ước lượng fps thật (chọn thử thách)
         self.front_sims = deque(maxlen=6)   # độ khớp các khung nhìn thẳng gần nhất, để phát hiện diện mạo đổi đột ngột
 
@@ -463,6 +535,14 @@ def process_frame(frame, ctx):
         return drawn, ""
 
     face = big[0]
+    ctx.faces_seen += 1
+    if not face_verifiable(float(face.det_score), enrollment.sharpness(frame, face.bbox)):
+        ctx.quality_low += 1              # không dùng khung kém để buộc tội hay xác nhận ai
+        ctx.match = 0
+        with state_lock:
+            ai_state["hint"] = "quality_low"
+        drawn.append((face, False, "Anh kem"))
+        return drawn, ""
     emb = ai_state["embedding"]
     sim = compute_similarity(face.normed_embedding, emb)
     with state_lock:
@@ -471,14 +551,23 @@ def process_frame(frame, ctx):
     # Đang quay đầu theo thử thách: mặt nghiêng làm độ khớp tụt, không được tính là "sai chủ thể".
     # Danh tính đã được xác nhận lúc nhìn thẳng (ctx.last_match) và được kiểm tra lại khi thử thách xong.
     turned = ctx.challenge is not None and ctx.challenge.head_turned
-    if sim < SIMILARITY_THRESHOLD and not turned:
+    verdict = classify_similarity(sim)
+    if verdict == "inconclusive" and not turned:
+        ctx.inconclusive += 1             # chưa kết luận: không đếm sai chủ thẻ, không làm hỏng thử thách đang chạy
+        ctx.match = 0
+        drawn.append((face, True, f"Chua ro ({sim:.2f})"))
+        return drawn, ""
+    if verdict == "mismatch" and not turned:
         drawn.append((face, False, f"Sai chu the ({sim:.2f})"))
         ctx.mismatch += 1
+        with state_lock:
+            ai_state["hint"] = "mismatch"                # OLED báo "SAI MAT", người dùng thử lại ngay
         if ctx.challenge is not None or len(ctx.pad.scores):
             ctx.reset_liveness()      # đổi người giữa chừng -> làm lại từ đầu
         ctx.match = 0
         if ctx.mismatch >= MISMATCH_FRAMES:
-            finish("denied", "face_mismatch", frame)
+            report_attempt(ctx, "face_mismatch", frame)  # chỉ ghi log, KHÔNG đóng phiên
+            ctx.mismatch = 0                             # mỗi lần thử cần thêm MISMATCH_FRAMES khung xác nhận
         return drawn, ""
 
     # Diện mạo đổi đột ngột lúc nhìn thẳng (bỏ / đeo khẩu trang, bỏ kính, tay che rồi mở...): mốc tư thế đầu của thử thách
@@ -504,9 +593,11 @@ def process_frame(frame, ctx):
             ctx.pad.add(pad.score(frame, face.bbox))
             with state_lock:
                 ai_state["pad_score"] = ctx.pad.mean()
-            if ctx.pad.full() and ctx.pad.mean() < PAD_THRESHOLD:
+            verdict = pad_verdict(ctx.pad.full(), ctx.pad.mean())
+            if verdict == "spoof":
                 finish("denied", "spoof_pad", frame)
                 return drawn, ""
+            ctx.pad_uncertain = verdict == "uncertain"      # chưa đủ tin cậy: không buộc tội, nhưng cũng không cho đi tiếp
         pad_ok = ctx.pad.ready() and ctx.pad.mean() >= PAD_THRESHOLD
     else:
         pad_ok = not REQUIRE_PAD   # chế độ dev: AI_REQUIRE_PAD=0 và không có model
@@ -793,7 +884,7 @@ def main():
             # Kiểm tra hết giờ TRƯỚC khi đọc camera: camera lỗi vẫn phải kết thúc phiên để báo về backend
             if time.time() > ai_state["timeout_at"]:
                 print("!!! [BÁO ĐỘNG] Quá thời gian quy định không nhận diện được mặt hợp lệ.")
-                finish("timeout", "timeout", last_frame)
+                finish("timeout", timeout_reason(ctx), last_frame)
                 continue
 
             if stream is None:
