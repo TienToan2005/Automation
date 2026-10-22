@@ -52,8 +52,8 @@ async function load() {
   document.getElementById("faceState").innerHTML = u.has_face
     ? `<span class="badge ok">Đã đăng ký ${fmtTime(u.face_enrolled_at)}</span>` : '<span class="badge warn">Chưa đăng ký</span>';
   document.getElementById("cards").innerHTML = u.cards.length ? u.cards.map(c => `<tr><td>${esc(c.uid)}</td>
-    <td>${c.status === "active" ? '<span class="badge ok">Đang dùng</span>' : '<span class="badge bad">Đã thu hồi</span>'}</td>
-    <td>${c.status === "active" ? `<button class="danger small" onclick="revoke(${c.id})">Thu hồi (báo mất)</button>` : ""}</td></tr>`).join("")
+    <td>${cardBadge(c)}</td>
+    <td class="row" style="gap:6px">${cardButtons(c)}</td></tr>`).join("")
     : '<tr><td class="muted">Chưa có thẻ</td></tr>';
   document.getElementById("suspendBox").innerHTML = u.status === "active"
     ? `<label style="flex:1;min-width:220px">Lý do khóa<input id="susReason"></label><button class="danger" onclick="suspend()">Khóa tài khoản</button><button class="danger" onclick="removeUser()">Xóa người dùng</button>`
@@ -61,6 +61,43 @@ async function load() {
   const l = await api(`/api/v1/access-logs?student_id=${encodeURIComponent(u.student_id)}&limit=30`);
   document.getElementById("logs").innerHTML = renderLogRows(l.items, true);
 }
+// Trạng thái HIỆU LỰC do backend tính (có hết hạn / khóa tạm). Khóa tạm tự hết, thu hồi / vô hiệu / hết hạn thì không.
+function cardBadge(c) {
+  const lockedLeft = c.locked_until ? Math.max(1, Math.ceil((new Date(c.locked_until) - Date.now()) / 60000)) : 0;
+  const exp = c.expires_at ? ` <span class="muted">hạn ${fmtTime(c.expires_at)}</span>` : "";
+  switch (c.effective_status) {
+    case "active": return '<span class="badge ok">Đang dùng</span>' + exp;
+    case "temporarily_locked": return `<span class="badge warn">Tạm khóa còn ~${lockedLeft} phút</span> <span class="muted">${esc(c.lock_reason)} · bậc ${c.lock_level}</span>`;
+    case "expired": return '<span class="badge bad">Hết hạn</span>' + exp;
+    case "disabled": return '<span class="badge bad">Vô hiệu hóa</span>';
+    default: return '<span class="badge bad">Đã thu hồi</span>';
+  }
+}
+function cardButtons(c) {
+  const b = [];
+  if (c.effective_status === "temporarily_locked") b.push(`<button class="small" onclick="cardAction(${c.id}, 'unlock', 'Mở khóa thẻ tạm thời: nhập lý do')">Mở khóa</button>`);
+  if (c.status === "active") b.push(`<button class="small" onclick="cardAction(${c.id}, 'disable', 'Vô hiệu hóa thẻ: nhập lý do')">Vô hiệu hóa</button>`);
+  if (c.status === "disabled") b.push(`<button class="small" onclick="cardAction(${c.id}, 'enable', 'Bật lại thẻ: nhập lý do')">Bật lại</button>`);
+  if (c.status !== "revoked") {
+    b.push(`<button class="small" onclick="cardExpiry(${c.id})">Đặt hạn</button>`);
+    b.push(`<button class="danger small" onclick="revoke(${c.id})">Thu hồi (báo mất)</button>`);
+  }
+  return b.join("");
+}
+// Mọi thao tác thay đổi trạng thái thẻ đều bắt buộc lý do và được ghi audit ở backend (không có nút giả chỉ đổi giao diện)
+window.cardAction = (id, action, prompt_) => {
+  const reason = prompt(prompt_ + " (tối thiểu 5 ký tự)");
+  if (reason === null) return;
+  return act(() => api(`/api/v1/cards/${id}/${action}`, { method: "POST", body: { reason } }), "Đã cập nhật thẻ")();
+};
+window.cardExpiry = id => {
+  const days = prompt("Hạn dùng: số ngày kể từ hôm nay (để trống = không giới hạn)");
+  if (days === null) return;
+  const reason = prompt("Lý do đặt hạn (tối thiểu 5 ký tự)");
+  if (reason === null) return;
+  const expires_at = days.trim() ? new Date(Date.now() + Number(days) * 86400000).toISOString() : null;
+  return act(() => api(`/api/v1/cards/${id}/expiry`, { method: "POST", body: { expires_at, reason } }), "Đã đặt hạn thẻ")();
+};
 const act = (fn, ok) => async (...a) => { try { await fn(...a); toast(ok); load(); } catch (e) { toast(e.message, true); } };
 
 document.getElementById("saveBtn").onclick = act(() => {

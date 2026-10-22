@@ -16,6 +16,7 @@ from app.main import app
 from app.services import ai_client
 from app.services.device_registry import registry
 from app.services.notifier import notifier
+from app.services.auth_policy import limiter
 
 EMB = [0.0] * 512
 EMB[0] = 1.0
@@ -32,6 +33,14 @@ def guide_payload(step="front", index=0, **over):
              for i, sid in enumerate(GUIDE_STEP_IDS)]
     return {"step": step, "step_index": index, "total": 4, "steps": steps, "hint": "", "passed_step": None,
             "step_timeout": False, "time_left": 15, "done": False, "quality": {}, **over}
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limiter():
+    """Bộ giới hạn tần suất nằm trong bộ nhớ: mỗi test bắt đầu sạch, không bị test trước làm lệch."""
+    limiter.clear()
+    yield
+    limiter.clear()
 
 
 @pytest.fixture(autouse=True)

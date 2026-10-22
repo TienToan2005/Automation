@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from ...core.database import get_db
 from ...models import User
-from ...schemas.user import CardCreate, FaceEnrollResult, ReasonBody, UserCreate, UserOut, UserUpdate
+from ...schemas.user import CardActionBody, CardCreate, CardExpiryBody, FaceEnrollResult, ReasonBody, UserCreate, UserOut, UserUpdate
 from ...services import user_service as svc
 from ..deps import current_user, require_admin
 
@@ -92,6 +92,27 @@ def delete_user(user_id: int, admin: User = Depends(require_admin), db: Session 
 @router.post("/users/{user_id}/cards", response_model=UserOut, status_code=201)
 def add_card(user_id: int, body: CardCreate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return svc.add_card(db, admin, svc.get_or_404(db, user_id), body.uid)
+
+
+@router.post("/cards/{card_id}/unlock", response_model=UserOut)
+def unlock_card(card_id: int, body: CardActionBody, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return svc.unlock_card(db, admin, card_id, body.reason)
+
+
+@router.post("/cards/{card_id}/disable", response_model=UserOut)
+def disable_card(card_id: int, body: CardActionBody, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return svc.disable_card(db, admin, card_id, body.reason)
+
+
+@router.post("/cards/{card_id}/enable", response_model=UserOut)
+def enable_card(card_id: int, body: CardActionBody, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return svc.enable_card(db, admin, card_id, body.reason)
+
+
+@router.post("/cards/{card_id}/expiry", response_model=UserOut)
+def set_card_expiry(card_id: int, body: CardExpiryBody, admin: User = Depends(require_admin),
+                    db: Session = Depends(get_db)):
+    return svc.set_card_expiry(db, admin, card_id, body.expires_at, body.reason)
 
 
 @router.post("/cards/{card_id}/revoke", response_model=UserOut)

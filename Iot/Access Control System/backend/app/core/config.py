@@ -54,6 +54,21 @@ class Settings(BaseSettings):
     # ThingsBoard (tùy chọn): https://thingsboard.cloud/api/v1/<TOKEN>/telemetry. Để trống = tắt. Xem services/thingsboard.py
     thingsboard_url: str = ""
 
+    # Chính sách xác thực / khóa tạm (xem docs/NGHIEP_VU_XAC_THUC.md). Giá trị khởi điểm, cần hiệu chỉnh bằng dữ liệu thật.
+    session_grace_s: int = 5                      # phiên hết hạn sau face_timeout_s + ngần này giây (bù độ trễ mạng)
+    scan_rate_per_uid_per_min: int = 6            # số lần quẹt một UID / phút trước khi bị giới hạn tần suất (429)
+    scan_rate_per_device_per_min: int = 30
+    mismatch_lock_threshold: int = 3              # số lần face_mismatch ĐÃ XÁC NHẬN trong cửa sổ thì khóa tạm thẻ
+    mismatch_window_s: int = 300
+    spoof_lock_threshold: int = 3                 # bộ đếm RIÊNG cho spoof_pad (PAD chắc chắn)
+    spoof_window_s: int = 900
+    liveness_lock_threshold: int = 5              # challenge_failed (không qua thử thách người thật) lặp lại: ngưỡng cao hơn vì
+    liveness_window_s: int = 900                  # có thể là lỗi thu nhận, chỉ khóa tạm khi lặp lại nhiều lần
+    lock_base_s: int = 300                        # cooldown bậc 1; bậc n = base * 3^(n-1), tối đa lock_cap_s (5, 15, 30 phút)
+    lock_cap_s: int = 1800
+    lock_level_decay_s: int = 86400               # quá ngần này giây kể từ lần khóa trước thì bậc cooldown về 1
+    door_event_session_window_s: int = 30         # gắn sự kiện mở cửa với phiên granted trong ngần này giây
+
     export_max_rows: int = 200_000                # trần số dòng nhật ký khi xuất CSV
 
     @property

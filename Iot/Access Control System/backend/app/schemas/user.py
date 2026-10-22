@@ -1,13 +1,20 @@
-from pydantic import BaseModel, ConfigDict
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from .common import UTCDateTime
 
 
 class CardOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
     id: int
     uid: str
-    status: str
+    status: str                                                  # trạng thái lưu: active | revoked | disabled
+    effective_status: str = Field(validation_alias="current_status")   # có tính hết hạn / khóa tạm
+    expires_at: UTCDateTime | None = None
+    locked_until: UTCDateTime | None = None
+    lock_reason: str = ""
+    lock_level: int = 0
 
 
 class UserOut(BaseModel):
@@ -43,6 +50,15 @@ class ReasonBody(BaseModel):
 
 class CardCreate(BaseModel):
     uid: str
+
+
+class CardActionBody(BaseModel):
+    reason: str = ""
+
+
+class CardExpiryBody(BaseModel):
+    expires_at: datetime | None = None      # None = bỏ hạn
+    reason: str = ""
 
 
 class FaceEnrollResult(BaseModel):
