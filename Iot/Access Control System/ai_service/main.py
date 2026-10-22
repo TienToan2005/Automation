@@ -1,4 +1,5 @@
 import base64
+from collections import deque
 import os
 import queue
 import sys
@@ -16,8 +17,10 @@ from insightface.app import FaceAnalysis
 from pydantic import BaseModel
 from typing import List, Optional
 
+import enroll_guide
 import enrollment
-from liveness import LivenessChallenge, PadWindow, PassivePAD
+import liveness
+from liveness import LivenessChallenge, PadWindow, PassivePAD, face_ear, face_turn_offset
 
 # Console Windows mặc định cp1252 sẽ lỗi khi in tiếng Việt
 for _s in (sys.stdout, sys.stderr):
@@ -39,7 +42,7 @@ CAMERA_ID = _env("AI_CAMERA_ID", "cam_cua_chinh_01")
 # Backend (Iot/backend): AI đẩy kết quả từng phiên (kèm ảnh nghi phạm). Mặc định trỏ vào backend chạy cùng máy
 # với token dev (khớp LAB_SERVICE_TOKEN mặc định của backend) để chạy được ngay. Khi triển khai thật phải đặt
 # AI_SERVICE_TOKEN riêng; đặt AI_BACKEND_EVENT_URL="" (rỗng) để tắt hẳn việc gửi.
-BACKEND_EVENT_URL = _env("AI_BACKEND_EVENT_URL", "http://localhost:8080/api/v1/access/verify")
+BACKEND_EVENT_URL = _env("AI_BACKEND_EVENT_URL", "http://127.0.0.1:8080/api/v1/access/verify")   # 127.0.0.1, không dùng localhost (Windows thử IPv6 trước: chậm ~2 giây)
 SERVICE_TOKEN = _env("AI_SERVICE_TOKEN", "dev-service-token")   # gửi kèm header X-Service-Token
 THINGSBOARD_URL = _env("AI_THINGSBOARD_URL", "")           # vd http://<tb-host>:8080/api/v1/<DEVICE_TOKEN>/telemetry
 PAD_MODEL_DIR = _env("AI_PAD_MODEL_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "models"))
@@ -60,12 +63,37 @@ DET_SIZE = int(_env("AI_DET_SIZE", "320"))
 # Độ nét tối thiểu (phương sai Laplacian của vùng mặt, xem enrollment.sharpness) khi đăng ký mặt trên web.
 # Giá trị đo thực tế được trả về trong /api/ai/embed ("sharpness") để chỉnh ngưỡng cho webcam của bạn.
 MIN_SHARPNESS = float(_env("AI_MIN_SHARPNESS", "60"))
+# In mỗi khung hình của phiên quét đăng ký (số đo tư thế, độ nét...) ra console để hiệu chỉnh ngưỡng với webcam của bạn.
+ENROLL_DEBUG = _env_bool("AI_ENROLL_DEBUG", False)
 
 SIMILARITY_THRESHOLD = float(_env("AI_SIM_THRESHOLD", "0.50"))
+APPEARANCE_JUMP = float(_env("AI_APPEARANCE_JUMP", "0.18"))   # độ khớp nhảy quá mức này (so với trung vị các khung thẳng gần nhất) = diện mạo đổi
+
+
+def appearance_changed(sim, front_sims, turn_progress):
+    """Diện mạo đổi đột ngột lúc nhìn thẳng (bỏ/đeo khẩu trang, kính, tay che...). Cần >= 3 mẫu thẳng để so.
+    turn_progress = độ lệch đầu đang đo của thử thách quay (0 nếu không phải thử thách quay): đầu vừa nhúc nhích quay
+    (mới được ~1/4 ngưỡng) thì độ khớp tụt là bình thường, không tính là đổi diện mạo."""
+    if len(front_sims) < 3 or turn_progress >= liveness.TURN_DELTA * 0.25:
+        return False
+    return abs(sim - float(np.median(front_sims))) > APPEARANCE_JUMP
+
+
+def pad_applicable(challenge):
+    """PAD chỉ chấm điểm khung nhìn thẳng. Mô hình PAD quen mặt chính diện: lúc đang quay đầu theo thử thách (mặt nghiêng)
+    nó cho điểm thấp, nếu vẫn tính thì người thật bị từ chối nhầm là giả mạo. Ảnh in không quay đầu được nên không lợi dụng được."""
+    return challenge is None or not challenge.head_turned
+
+
+def default_skip_frames(source):
+    """Số khung đầu bỏ khi mở camera. Camera ESP32 (URL) giữ khung CŨ trong bộ đệm từ phiên trước, và các khung đầu chưa lấy
+    sáng làm bộ chống giả (PAD) chấm thấp oan: bỏ vài khung. Webcam trong máy thì không cần."""
+    return 0 if isinstance(source, int) else int(_env("AI_CAMERA_SKIP_FRAMES", "3"))
+IDENTITY_FRESH_S = 4.0   # thử thách xong phải có khung khớp chủ thẻ trong ngần này giây gần nhất
 REQUIRED_FRAMES = 5      # số frame liên tiếp khớp mặt trước khi sang bước thách thức
 MISMATCH_FRAMES = 20     # số frame liên tiếp có mặt nhưng sai chủ thể -> từ chối
 SCAN_TIMEOUT_S = float(_env("AI_SCAN_TIMEOUT_S", "30"))        # ESP32 chờ SCAN_TIMEOUT_S + 1s (FACE_TIMEOUT_MS)
-CHALLENGE_TIMEOUT_S = float(_env("AI_CHALLENGE_TIMEOUT_S", "12"))
+CHALLENGE_TIMEOUT_S = float(_env("AI_CHALLENGE_TIMEOUT_S", "20"))
 MIN_FACE_WIDTH = int(_env("AI_MIN_FACE_WIDTH", "120"))     # "chặn cửa": mặt phải đủ lớn (đứng đúng khoảng cách) mới xử lý
 PAD_THRESHOLD = float(_env("AI_PAD_THRESHOLD", "0.70"))    # trung bình điểm mặt thật tối thiểu
 PAD_WINDOW = 6
@@ -98,6 +126,8 @@ known_embeddings = {}
 face_app = None
 pad = None
 camera_ok = False
+enroll_sessions = enroll_guide.SessionStore()   # phiên quét có hướng dẫn của trang đăng ký web (xem /api/ai/enroll/*)
+enroll_lock = threading.Lock()                  # tuần tự hoá thao tác lên một phiên quét (khung hình và lệnh có thể đến song song)
 
 
 # ----------------------- Đẩy sự kiện sang Backend / ThingsBoard -----------------------
@@ -313,6 +343,61 @@ def embed_image(request: EmbedRequest):
     with infer_lock:
         return enrollment.analyze_image(face_app, pad, img, MIN_FACE_WIDTH, PAD_THRESHOLD, MIN_SHARPNESS)
 
+class EnrollFrameRequest(BaseModel):
+    session_id: str
+    image_base64: Optional[str] = None        # khung hình JPEG/PNG; bỏ trống khi chỉ gửi lệnh
+    command: Optional[str] = None             # "retry" (làm lại bước hiện tại) | "skip" (bỏ qua bước chớp mắt)
+
+@api_app.post("/api/ai/enroll/start")
+def enroll_start():
+    """Web đăng ký (qua Backend): mở phiên quét có hướng dẫn nhìn thẳng -> quay trái -> quay phải -> chớp mắt."""
+    if face_app is None:
+        raise HTTPException(status_code=503, detail="Model not ready")
+    sid, guide = enroll_sessions.start()
+    return {"session_id": sid, **guide.snapshot()}
+
+@api_app.post("/api/ai/enroll/frame")
+def enroll_frame(request: EnrollFrameRequest):
+    """Một khung hình của phiên quét -> trạng thái bước hiện tại (enroll_guide.GuidedEnroll.snapshot) kèm "hint" (mã gợi ý),
+    "quality" (số đo của khung) và "passed_step": khác null nghĩa là KHUNG NÀY vừa hoàn thành bước đó, bên gọi giữ lại ảnh
+    làm ảnh đăng ký. 404 = phiên không có hoặc đã hết hạn; 400 = lệnh/ảnh không hợp lệ."""
+    if face_app is None:
+        raise HTTPException(status_code=503, detail="Model not ready")
+    guide = enroll_sessions.get(request.session_id)
+    if guide is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired session")
+    with enroll_lock:
+        if request.command == "retry":
+            guide.retry()
+        elif request.command == "skip":
+            if not guide.skip():
+                raise HTTPException(status_code=400, detail="Only the blink step can be skipped")
+        elif request.command:
+            raise HTTPException(status_code=400, detail="Unknown command")
+    if request.image_base64 is None:
+        return guide.snapshot()
+    try:
+        img = enrollment.decode_image(request.image_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image")
+    with infer_lock:
+        result, face = enrollment.inspect_image(face_app, pad, img, MIN_FACE_WIDTH, PAD_THRESHOLD, MIN_SHARPNESS)
+    with enroll_lock:
+        out = guide.update(result["reason"], face, (img.shape[1], img.shape[0]))
+    out["quality"] = {k: result[k] for k in ("face_width", "det_score", "sharpness", "pad_score") if k in result}
+    pose = {}
+    if face is not None:
+        offset, ear = face_turn_offset(face), face_ear(face)
+        if offset is not None:
+            pose["offset"] = round(offset, 3)      # độ lệch mũi (dương = sang trái của người dùng): thước đo quay đầu
+        if ear is not None:
+            pose["ear"] = round(ear, 3)            # độ mở mắt (EAR): thước đo chớp mắt
+    out["pose"] = pose
+    if ENROLL_DEBUG:
+        print(f"[ENROLL] bước={out['step']} khung={result['reason']} gợi ý={out['hint'] or '-'} đạt={out['passed_step'] or '-'} "
+              f"offset={pose.get('offset')} ear={pose.get('ear')} {out['quality']}")
+    return out
+
 def run_server():
     uvicorn.run(api_app, host="0.0.0.0", port=5050, log_level="error")
 
@@ -338,6 +423,15 @@ class SessionCtx:
         self.mismatch = 0
         self.pad = PadWindow(PAD_WINDOW, PAD_MIN_FRAMES)
         self.challenge = None
+        self.last_match = 0.0     # lần cuối thấy mặt khớp chủ thẻ (khi nhìn thẳng)
+        self.frame_times = deque(maxlen=20)   # thời điểm các khung gần nhất, để ước lượng fps thật (chọn thử thách)
+        self.front_sims = deque(maxlen=6)   # độ khớp các khung nhìn thẳng gần nhất, để phát hiện diện mạo đổi đột ngột
+
+    def fps(self):
+        if len(self.frame_times) < 5:
+            return None
+        span = self.frame_times[-1] - self.frame_times[0]
+        return (len(self.frame_times) - 1) / span if span > 0 else None
 
     def reset_liveness(self):
         self.pad.clear()
@@ -348,6 +442,7 @@ class SessionCtx:
 
 def process_frame(frame, ctx):
     """Một bước xử lý cho phiên đang active. Trả về (faces_vẽ, chú thích debug)."""
+    ctx.frame_times.append(time.time())
     with infer_lock:
         faces = face_app.get(frame)
     big = [f for f in faces if (f.bbox[2] - f.bbox[0]) >= MIN_FACE_WIDTH]
@@ -373,7 +468,10 @@ def process_frame(frame, ctx):
     with state_lock:
         ai_state["similarity"] = max(ai_state["similarity"], sim)
 
-    if sim < SIMILARITY_THRESHOLD:
+    # Đang quay đầu theo thử thách: mặt nghiêng làm độ khớp tụt, không được tính là "sai chủ thể".
+    # Danh tính đã được xác nhận lúc nhìn thẳng (ctx.last_match) và được kiểm tra lại khi thử thách xong.
+    turned = ctx.challenge is not None and ctx.challenge.head_turned
+    if sim < SIMILARITY_THRESHOLD and not turned:
         drawn.append((face, False, f"Sai chu the ({sim:.2f})"))
         ctx.mismatch += 1
         if ctx.challenge is not None or len(ctx.pad.scores):
@@ -383,18 +481,32 @@ def process_frame(frame, ctx):
             finish("denied", "face_mismatch", frame)
         return drawn, ""
 
-    ctx.mismatch = 0
-    ctx.match += 1
-    drawn.append((face, True, f"Trung khop ({sim:.2f})"))
+    # Diện mạo đổi đột ngột lúc nhìn thẳng (bỏ / đeo khẩu trang, bỏ kính, tay che rồi mở...): mốc tư thế đầu của thử thách
+    # đã lấy trong điều kiện khác nên không còn đáng tin -> làm lại thử thách với mốc mới.
+    if not turned:
+        progress = abs(ctx.challenge.debug) if ctx.challenge is not None and ctx.challenge.type != "blink" else 0.0
+        if ctx.challenge is not None and appearance_changed(sim, ctx.front_sims, progress):
+            print(f"[LIVENESS] Diện mạo đổi đột ngột (độ khớp {np.median(ctx.front_sims):.2f} -> {sim:.2f}), làm lại thử thách")
+            ctx.reset_liveness()
+            ctx.front_sims.clear()
+        ctx.front_sims.append(sim)
+    if sim >= SIMILARITY_THRESHOLD:
+        ctx.mismatch = 0
+        ctx.match += 1
+        ctx.last_match = time.time()
+        drawn.append((face, True, f"Trung khop ({sim:.2f})"))
+    else:
+        drawn.append((face, True, f"Dang quay dau ({sim:.2f})"))
 
     # ----- Mức 2: PAD thụ động trên cùng khuôn mặt đã khớp -----
     if pad.enabled:
-        ctx.pad.add(pad.score(frame, face.bbox))
-        with state_lock:
-            ai_state["pad_score"] = ctx.pad.mean()
-        if ctx.pad.full() and ctx.pad.mean() < PAD_THRESHOLD:
-            finish("denied", "spoof_pad", frame)
-            return drawn, ""
+        if pad_applicable(ctx.challenge):
+            ctx.pad.add(pad.score(frame, face.bbox))
+            with state_lock:
+                ai_state["pad_score"] = ctx.pad.mean()
+            if ctx.pad.full() and ctx.pad.mean() < PAD_THRESHOLD:
+                finish("denied", "spoof_pad", frame)
+                return drawn, ""
         pad_ok = ctx.pad.ready() and ctx.pad.mean() >= PAD_THRESHOLD
     else:
         pad_ok = not REQUIRE_PAD   # chế độ dev: AI_REQUIRE_PAD=0 và không có model
@@ -403,7 +515,8 @@ def process_frame(frame, ctx):
     debug = ""
     if ctx.challenge is None:
         if ctx.match >= REQUIRED_FRAMES and pad_ok:
-            ctx.challenge = LivenessChallenge(timeout_s=min(CHALLENGE_TIMEOUT_S, max(1.0, ai_state["timeout_at"] - time.time())))
+            ctx.challenge = LivenessChallenge(timeout_s=min(CHALLENGE_TIMEOUT_S, max(1.0, ai_state["timeout_at"] - time.time())),
+                                              fps=ctx.fps())
             with state_lock:
                 ai_state.update(phase="challenge", challenge={
                     "type": ctx.challenge.type, "text": ctx.challenge.text,
@@ -413,7 +526,11 @@ def process_frame(frame, ctx):
         status = ctx.challenge.update(face)
         debug = f"{ctx.challenge.type}: {ctx.challenge.debug:+.2f}"
         if status == "passed":
-            finish("granted", "ok", frame)
+            if time.time() - ctx.last_match <= IDENTITY_FRESH_S:
+                finish("granted", "ok", frame)
+            else:                 # quay xong nhưng đã lâu không thấy mặt khớp chủ thẻ: làm lại thử thách
+                print("[LIVENESS] Đạt thử thách nhưng chưa xác nhận lại danh tính, làm lại")
+                ctx.reset_liveness()
         elif status == "failed":
             finish("denied", "challenge_failed", frame)
     return drawn, debug
@@ -541,14 +658,15 @@ class CameraStream:
     Nếu đọc ngay trong vòng lặp xử lý thì khi AI chậm, OpenCV/driver xếp hàng khung hình cũ:
     hình trễ vài giây và cú chớp mắt bị rơi mất."""
 
-    def __init__(self, source):
+    def __init__(self, source, skip=None, reopen_after_s=None):
+        self._source = source
+        self._skip = default_skip_frames(source) if skip is None else skip     # số khung đầu còn phải bỏ
+        # Nguồn URL (ESP32) im lặng quá lâu (board khởi động lại, WiFi đứt) thì mở lại luồng thay vì chờ ffmpeg 30 giây
+        self._reopen_after = float(_env("AI_CAMERA_REOPEN_S", "5")) if reopen_after_s is None else reopen_after_s
         # Backend MSMF mặc định của OpenCV trên Windows mất ~6 s để ra khung hình đầu tiên (đo trên máy này),
         # DirectShow ~1 s. Camera được mở lại ở MỖI phiên quét nên 6 s đó trừ thẳng vào thời gian chờ.
         # Đặt AI_CAMERA_BACKEND=default để dùng lại backend mặc định. Nguồn là URL (ESP32-CAM) thì không đổi.
-        if os.name == "nt" and isinstance(source, int) and _env("AI_CAMERA_BACKEND", "dshow").lower() == "dshow":
-            self.cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
-        else:
-            self.cap = cv2.VideoCapture(source)
+        self.cap = self._open()
         self.ok = False
         self.frame, self.seq = None, 0
         self._lock = threading.Lock()
@@ -556,13 +674,41 @@ class CameraStream:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def _open(self):
+        source = self._source
+        if os.name == "nt" and isinstance(source, int) and _env("AI_CAMERA_BACKEND", "dshow").lower() == "dshow":
+            return cv2.VideoCapture(source, cv2.CAP_DSHOW)
+        if isinstance(source, str):       # URL: không treo 30 giây khi board không trả lời, tối đa 5 giây mỗi lần đọc
+            return cv2.VideoCapture(source, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000])
+        return cv2.VideoCapture(source)
+
     def _run(self):
+        try:
+            self._read_loop()
+        finally:
+            self.cap.release()      # CHỈ luồng này được đóng camera: đóng từ luồng khác lúc read() chưa trả về làm ffmpeg assert và sập cả AI
+
+    def _read_loop(self):
+        silent_since = None
         while not self._stop:
             ret, frame = self.cap.read()
             self.ok = bool(ret)
             if ret:
-                with self._lock:
-                    self.frame, self.seq = frame, self.seq + 1
+                silent_since = None
+                if self._skip > 0:
+                    self._skip -= 1                    # khung cũ / chưa lấy sáng: bỏ
+                else:
+                    with self._lock:
+                        self.frame, self.seq = frame, self.seq + 1
+                continue
+            now = time.time()
+            silent_since = silent_since or now
+            if isinstance(self._source, str) and now - silent_since >= self._reopen_after and not self._stop:
+                print(f"[CAMERA] Luồng im lặng {now - silent_since:.1f}s, mở lại kết nối tới camera")
+                self.cap.release()
+                self.cap = self._open()
+                self._skip = default_skip_frames(self._source)
+                silent_since = None
             else:
                 time.sleep(0.1)
 
@@ -577,9 +723,10 @@ class CameraStream:
         return self.frame is not None
 
     def release(self):
+        """Báo luồng đọc dừng rồi chờ tối đa 2 s. KHÔNG tự đóng camera ở đây: nếu read() còn kẹt (WiFi chậm) thì luồng đọc
+        sẽ tự đóng ngay khi read() trả về."""
         self._stop = True
         self._thread.join(timeout=2)
-        self.cap.release()
 
 
 def main():

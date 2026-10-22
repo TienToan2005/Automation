@@ -1,8 +1,5 @@
 __pycache__/
-<<<<<<< Updated upstream
 .pytest_cache/
 tools/calibration_last.csv
-=======
 eval_data/
 results/
->>>>>>> Stashed changes

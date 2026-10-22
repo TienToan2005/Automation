@@ -1,7 +1,9 @@
 import base64
 import uuid
 
-from .conftest import DEVICE, SERVICE
+from app.services import ai_client
+
+from .conftest import DEVICE, SERVICE, guide_payload
 
 
 def scan(client, uid="A123"):
@@ -218,3 +220,82 @@ def test_face_scan_preview(admin):
     bad = admin.post("/api/v1/face/scan", files={"image": ("f.jpg", b"bad")}).json()
     assert ok["ok"] and "embedding" not in ok
     assert not bad["ok"] and bad["message"] == "Không thấy khuôn mặt"
+
+
+# ------------------------------ Quét mặt có hướng dẫn (nhìn thẳng -> trái -> phải -> chớp mắt) ------------------------------
+def guide_frame(client, **form):
+    return client.post("/api/v1/face/guide/frame", data={"session_id": "S1", **form}, files={"image": ("f.jpg", b"frame-bytes")})
+
+
+def test_guide_start_adds_vietnamese_labels_and_the_first_instruction(admin):
+    body = admin.post("/api/v1/face/guide/start").json()
+    assert body["session_id"] == "S1" and body["step"] == "front"
+    assert [s["label"] for s in body["steps"]] == ["Nhìn thẳng", "Quay trái", "Quay phải", "Chớp mắt"]
+    assert body["instruction"] == "Nhìn thẳng vào camera"
+
+
+def test_guide_frame_forwards_the_image_and_explains_the_hint_for_the_current_step(admin, fake_ai):
+    fake_ai["guide_reply"] = guide_payload(step="left", index=1, hint="wrong_way", passed_step="front")
+    body = guide_frame(admin).json()
+    assert fake_ai["guide"] == [("S1", b"frame-bytes", None)]
+    assert body["instruction"] == "Quay đầu sang trái" and body["message"] == "Quay sang bên kia"
+    assert body["passed_step"] == "front"                                     # AI quyết định, backend không đổi
+
+
+def test_guide_frame_without_a_hint_has_an_empty_message(admin):
+    assert guide_frame(admin).json()["message"] == ""
+
+
+def test_guide_unknown_hint_code_is_shown_as_is_rather_than_hidden(admin, fake_ai):
+    fake_ai["guide_reply"] = guide_payload(hint="new_code_from_a_newer_ai")
+    assert guide_frame(admin).json()["message"] == "new_code_from_a_newer_ai"
+
+
+def test_guide_command_can_be_sent_without_an_image(admin, fake_ai):
+    admin.post("/api/v1/face/guide/frame", data={"session_id": "S1", "command": "retry"})
+    assert fake_ai["guide"] == [("S1", None, "retry")]
+
+
+def test_guide_finished_session_has_no_step_and_says_so(admin, fake_ai):
+    fake_ai["guide_reply"] = guide_payload(step=None, index=4, done=True, passed_step="blink")
+    body = guide_frame(admin).json()
+    assert body["done"] is True and body["step"] is None and body["instruction"] == "Hoàn tất quét khuôn mặt"
+
+
+def test_guide_rejects_oversized_frames_without_calling_the_ai(admin, fake_ai):
+    r = admin.post("/api/v1/face/guide/frame", data={"session_id": "S1"},
+                   files={"image": ("f.jpg", b"x" * (8 * 1024 * 1024 + 1))})
+    assert r.status_code == 413 and fake_ai["guide"] == []
+
+
+def test_guide_is_admin_only(client, student):
+    client.post("/api/v1/auth/logout")
+    assert client.post("/api/v1/face/guide/start").status_code == 401
+    assert guide_frame(client).status_code == 401
+    client.post("/api/v1/auth/login", json={"student_id": "B23DCAT286", "password": "123456"})
+    assert client.post("/api/v1/face/guide/start").status_code == 403
+    assert guide_frame(client).status_code == 403
+
+
+def test_guide_when_the_ai_is_down_is_503_with_a_code_the_page_can_react_to(admin, monkeypatch):
+    def down(*args, **kwargs):
+        raise ai_client.AIUnavailable("connection refused")
+    monkeypatch.setattr(ai_client, "enroll_start", down)
+    monkeypatch.setattr(ai_client, "enroll_frame", down)
+    for r in (admin.post("/api/v1/face/guide/start"), guide_frame(admin)):
+        assert r.status_code == 503 and r.json()["detail"]["code"] == "ai_unavailable"
+
+
+def test_guide_expired_session_is_410_so_the_page_can_restart(admin, monkeypatch):
+    def gone(*args, **kwargs):
+        raise ai_client.AISessionExpired()
+    monkeypatch.setattr(ai_client, "enroll_frame", gone)
+    r = guide_frame(admin)
+    assert r.status_code == 410 and r.json()["detail"]["code"] == "session_expired"
+
+
+def test_guide_command_the_ai_refuses_is_400(admin, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise ai_client.AIRejected("Only the blink step can be skipped")
+    monkeypatch.setattr(ai_client, "enroll_frame", refuse)
+    assert guide_frame(admin, command="skip").status_code == 400

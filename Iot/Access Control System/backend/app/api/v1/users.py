@@ -47,6 +47,20 @@ async def scan_face(image: UploadFile = File(...), _: User = Depends(require_adm
     return svc.scan_face(await image.read())
 
 
+@router.post("/face/guide/start")
+def guide_start(_: User = Depends(require_admin)):
+    """Bắt đầu quét khuôn mặt có hướng dẫn (nhìn thẳng -> quay trái -> quay phải -> chớp mắt): mở phiên trên AI."""
+    return svc.guide_start()
+
+
+@router.post("/face/guide/frame")
+async def guide_frame(session_id: str = Form(...), command: str | None = Form(None),
+                      image: UploadFile | None = File(None), _: User = Depends(require_admin)):
+    """Một khung hình webcam của phiên quét -> bước hiện tại, gợi ý, và `passed_step` (khung này vừa hoàn thành bước nào).
+    `command`: "retry" (làm lại bước hiện tại) hoặc "skip" (bỏ qua bước chớp mắt), có thể gửi không kèm ảnh. Không lưu gì."""
+    return svc.guide_frame(session_id, await image.read() if image else None, command)
+
+
 @router.get("/users/{user_id}", response_model=UserOut)
 def get_user(user_id: int, actor: User = Depends(current_user), db: Session = Depends(get_db)):
     _self_or_admin(actor, user_id, "Không có quyền xem người dùng này")

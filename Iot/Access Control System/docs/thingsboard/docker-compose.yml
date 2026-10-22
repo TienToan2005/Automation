@@ -1,0 +1,52 @@
+# ThingsBoard Community Edition (bản phát triển / thử nghiệm) để nhận dữ liệu từ AI Service.
+# Lấy từ hướng dẫn chính thức https://thingsboard.io/docs/installation/docker-windows/ ,
+# chỉ đổi cổng giao diện 8080 -> 9080 vì backend của dự án đã dùng cổng 8080.
+#
+#   cd docs\thingsboard
+#   docker compose run --rm -e INSTALL_TB=true -e LOAD_DEMO=true thingsboard-ce     (MỘT LẦN: tạo CSDL + tài khoản demo)
+#   docker compose up -d                                                           (khởi động mất 1-2 phút)
+#   http://localhost:9080  ->  tenant@thingsboard.org / tenant   (đổi mật khẩu ngay sau khi đăng nhập)
+#
+# Cần Docker Desktop và khoảng 2-3 GB RAM trống. Dừng: docker compose down   (dữ liệu giữ trong volume tb-postgres-data)
+services:
+  postgres:
+    restart: always
+    image: "postgres:18"
+    ports:
+      - "5432"
+    environment:
+      POSTGRES_DB: thingsboard
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d thingsboard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+  thingsboard-ce:
+    restart: always
+    image: "thingsboard/tb-node:4.3.1.6"
+    ports:
+      - "9080:8080"          # giao diện web VÀ API thiết bị: http://localhost:9080/api/v1/<TOKEN>/telemetry
+      - "7070:7070"
+      - "1883:1883"          # MQTT
+      - "8883:8883"
+      - "5683-5688:5683-5688/udp"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+    environment:
+      TB_SERVICE_ID: tb-ce-node
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/thingsboard
+      SPRING_DATASOURCE_PASSWORD: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+volumes:
+  postgres-data:
+    name: tb-postgres-data
+    driver: local

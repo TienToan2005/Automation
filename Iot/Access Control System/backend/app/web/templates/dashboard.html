@@ -6,7 +6,7 @@
 
 <div class="card">
   <h2>Thiết bị cửa</h2>
-  <div id="devices"><p class="muted">Chưa có thiết bị nào kết nối. Hãy khởi động Wokwi.</p></div>
+  <div id="devices"><p class="muted">Chưa có thiết bị nào kết nối. Hãy cấp nguồn cho ESP32 và kiểm tra WiFi.</p></div>
 </div>
 
 <div class="card">
@@ -72,7 +72,7 @@ async function loadDevices() {
           &middot; Khóa: <b>${d.relay ? "MỞ" : "ĐÓNG"}</b> &middot; WiFi ${d.rssi ?? "?"} dBm &middot; Uptime ${d.uptime_s}s &middot; ${esc(d.ip)}</div>
       </div>
       ${d.state === "LOCKOUT" && d.online ? `<button class="secondary small" onclick="resetLockout('${esc(d.device_id)}')">Gỡ khóa tạm</button>` : ""}
-    </div>`).join("") : '<p class="muted">Chưa có thiết bị nào kết nối. Hãy khởi động Wokwi.</p>';
+    </div>`).join("") : '<p class="muted">Chưa có thiết bị nào kết nối. Hãy cấp nguồn cho ESP32 và kiểm tra WiFi.</p>';
 }
 const load = () => Promise.allSettled([loadStatus(), loadLogs(), loadDevices()]);
 window.resetLockout = async id => {

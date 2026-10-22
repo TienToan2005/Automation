@@ -3,7 +3,7 @@
 Backend trung tâm của hệ thống kiểm soát ra vào hai lớp (thẻ + khuôn mặt), kèm giao diện web cho admin và sinh viên.
 Bám theo [`../docs/api-spec.md`](../docs/api-spec.md).
 
-**Mục tiêu:** khởi động Wokwi → vào web → thấy thiết bị online, mở cửa từ xa, xem nhật ký thời gian thực.
+**Mục tiêu:** cấp nguồn cho ESP32 → vào web → thấy thiết bị online, mở cửa từ xa, xem nhật ký thời gian thực.
 
 ## Mục lục
 
@@ -29,10 +29,10 @@ Bám theo [`../docs/api-spec.md`](../docs/api-spec.md).
 |---|---|---|---|
 | **Backend + Web** | `Iot/backend` | 8080 | Trung tâm: lưu người dùng/thẻ/khuôn mặt, ra quyết định, ghi nhật ký, phục vụ web |
 | **AI Service** | `Iot/ai_service` | 5050 | Đọc webcam, so khớp mặt, chống giả mạo. Chỉ xác minh, **không** quyết định mở cửa |
-| **ESP32 (Wokwi)** | `Iot/wokwi` | – | Bàn phím nhập mã thẻ, OLED, relay khóa, nút mở cửa trong |
+| **ESP32-S3-CAM (mạch thật)** | `Iot/firmware` | 81 (luồng hình) | Đầu đọc thẻ RC522, OLED, relay khóa, nút mở cửa trong, camera OV5640 |
 
 ```
- Trình duyệt ──────────────► Backend (8080) ◄────────── ESP32 trong Wokwi
+ Trình duyệt ──────────────► Backend (8080) ◄────────── ESP32-S3-CAM
    (admin/sinh viên)             │    ▲                   (card-scan, poll phiên,
                                  │    │                    heartbeat, exit)
                     trigger+vector    │ verify (kết quả + ảnh nghi phạm)
@@ -46,7 +46,7 @@ Nguyên tắc: **ESP32 chỉ nói chuyện với Backend.** Backend gọi AI, AI
 
 ## 2. Chạy demo từ đầu đến cuối
 
-Yêu cầu: Python 3.11+, VS Code có extension **PlatformIO** và **Wokwi**, một webcam.
+Yêu cầu: Python 3.11+, VS Code có extension **PlatformIO** (nạp firmware), một webcam (hoặc camera của board).
 
 ### Bước 1. Cài và nạp dữ liệu demo cho backend
 
@@ -58,7 +58,7 @@ python -m scripts.seed_demo
 
 `seed_demo` tạo admin và 3 sinh viên khớp với firmware, lấy khuôn mặt từ `ai_service/embeddings/*.npy` nên không cần chụp lại ảnh:
 
-| Mã SV | Thẻ (gõ trên keypad Wokwi) | Khuôn mặt | Dùng để thử |
+| Mã SV | Thẻ (UID demo; thử bằng lệnh `uid A123` trên Serial Monitor) | Khuôn mặt | Dùng để thử |
 |---|---|---|---|
 | `B23DCAT286` | `A123` | có | luồng thành công |
 | `B23DCAT296` | `B456` | có | luồng thành công / thử người khác |
@@ -72,7 +72,7 @@ Tài khoản web: `admin` / `admin123` (admin), các sinh viên: mã SV / `12345
 uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-`--host 0.0.0.0` là **bắt buộc**: Wokwi truy cập backend qua `host.wokwi.internal`, không phải `localhost`.
+`--host 0.0.0.0` là **bắt buộc**: ESP32 truy cập backend qua IP của máy tính trong mạng LAN, không phải `localhost`.
 Mở http://localhost:8080 (tài liệu API tự sinh: http://localhost:8080/docs).
 
 ### Bước 3. Chạy AI Service (nối về backend)
@@ -80,41 +80,41 @@ Mở http://localhost:8080 (tài liệu API tự sinh: http://localhost:8080/doc
 ```bash
 cd Iot/ai_service
 pip install -r requirements.txt
-set AI_BACKEND_EVENT_URL=http://localhost:8080/api/v1/access/verify
+set AI_BACKEND_EVENT_URL=http://127.0.0.1:8080/api/v1/access/verify
 set AI_SERVICE_TOKEN=dev-service-token
 python main.py
 ```
 
-AI mặc định gửi kết quả về `http://localhost:8080/api/v1/access/verify` với token `dev-service-token`, khớp mặc định của backend, nên chạy cùng máy thì chỉ cần `python main.py`; lúc khởi động AI in dòng `[BACKEND] Gửi kết quả về ...` để xác nhận. Chỉ cần đặt biến khi backend ở máy khác hoặc đã đổi `LAB_SERVICE_TOKEN` (có thể dùng `.\start_ai.ps1 -Backend ... -Token ...`). Đặt `AI_BACKEND_EVENT_URL=""` (rỗng) thì AI in cảnh báo và ESP32 sẽ không bao giờ nhận được kết quả.
+AI mặc định gửi kết quả về `http://127.0.0.1:8080/api/v1/access/verify` với token `dev-service-token`, khớp mặc định của backend, nên chạy cùng máy thì chỉ cần `python main.py`; lúc khởi động AI in dòng `[BACKEND] Gửi kết quả về ...` để xác nhận. Chỉ cần đặt biến khi backend ở máy khác hoặc đã đổi `LAB_SERVICE_TOKEN` (có thể dùng `.\start_ai.ps1 -Backend ... -Token ...`). Đặt `AI_BACKEND_EVENT_URL=""` (rỗng) thì AI in cảnh báo và ESP32 sẽ không bao giờ nhận được kết quả.
 Trên PowerShell dùng `$env:AI_BACKEND_EVENT_URL="..."` thay cho `set`. Cửa sổ camera hiện lên, dòng chữ "VUI LONG QUET THE" nghĩa là AI sẵn sàng.
 
 **Chạy bằng GPU NVIDIA (tùy chọn, nhanh hơn ~6 lần):** `pip uninstall -y onnxruntime && pip install onnxruntime-gpu==1.26.0`. Phải đúng 1.26.0 (bản cuối build cho CUDA 12); từ 1.27 là CUDA 13, không chạy với torch cu12x. Khi khởi động AI in `[ORT] Provider đang chạy: ['CUDAExecutionProvider', ...]` và `/api/ai/health` có `"gpu": true`. Mặc định `AI_USE_GPU=auto` (có CUDA thì dùng); `AI_USE_GPU=0` ép chạy CPU; `AI_GPU_MEM_MB` (mặc định 1536) giới hạn VRAM.
 Nếu chưa muốn dùng AI, bỏ qua bước này: quẹt thẻ sẽ bị từ chối `ai_unavailable` nhưng web, heartbeat và mở cửa từ xa vẫn chạy.
 
-### Bước 4. Chạy Wokwi
+### Bước 4. Nạp firmware cho ESP32
+
+Firmware mạch thật nằm ở `Iot/firmware`. Điền WiFi (2,4 GHz) và IP máy chạy backend vào `firmware/include/config_local.h`, rồi nạp:
 
 ```bash
-cd Iot/wokwi
-pio run                    # hoặc VS Code: PlatformIO → Build
+cd Iot/firmware
+pio run -e esp32s3cam -t upload
 ```
 
-Rồi trong VS Code: `F1` → **Wokwi: Start Simulator**. Quan sát Serial Monitor, thấy `[WIFI] OK` là ESP32 đã nối mạng.
-Firmware trỏ tới `http://host.wokwi.internal:8080` (sửa ở đầu `src/main.cpp` nếu đổi cổng). `DEVICE_TOKEN` trong firmware phải trùng `LAB_DEVICE_TOKEN` của backend.
+Mở Serial Monitor (115200): thấy `[WIFI] OK` và `[BACKEND] ... HTTP 200` là ESP32 đã nối được backend. `DEVICE_TOKEN` trong `config_local.h` phải trùng `LAB_DEVICE_TOKEN` của backend. Nối dây và kiểm tra từng linh kiện: [`../docs/HUONG_DAN_NAP_FIRMWARE.md`](../docs/HUONG_DAN_NAP_FIRMWARE.md).
 
 ### Bước 5. Thử các kịch bản
 
 | Việc làm | Kết quả mong đợi |
 |---|---|
-| Vào web `/dashboard` sau khi Wokwi chạy vài giây | Thẻ "Thiết bị cửa" hiện `door-esp32-01` **Online**, trạng thái "Chờ quẹt thẻ" |
-| Trên keypad Wokwi bấm `A` `1` `2` `3` `#` rồi nhìn webcam | OLED hiện hướng dẫn (ví dụ "QUAY DAU SANG PHAI"); làm đúng → "MO CUA", relay bật; web hiện log "Cho vào" |
-| Gõ `C789` `#` | OLED "Chua dang ky mat"; web ghi log từ chối `not_enrolled` |
-| Gõ mã lạ `9999` `#` | OLED "The la"; sai 3 lần → "BI KHOA" 15 giây; dashboard hiện nút **Gỡ khóa tạm** |
+| Vào web `/dashboard` sau khi ESP32 chạy vài giây | Thẻ "Thiết bị cửa" hiện `door-esp32-01` **Online**, trạng thái "Chờ quẹt thẻ" |
+| Quẹt thẻ đã đăng ký mặt (hoặc gõ `uid A123` trong Serial Monitor) rồi nhìn camera | OLED hiện hướng dẫn (ví dụ "QUAY DAU SANG PHAI"); làm đúng → "MO CUA", relay bật; web hiện log "Cho vào" |
+| Quẹt thẻ của người chưa đăng ký mặt (hoặc `uid C789`) | OLED "Chua dang ky mat"; web ghi log từ chối `not_enrolled` |
+| Quẹt thẻ lạ (hoặc `uid 9999`) | OLED "The la"; sai 3 lần → "BI KHOA" 15 giây; dashboard hiện nút **Gỡ khóa tạm** |
 | Dashboard → nhập lý do → **Mở cửa** | Vài giây sau OLED "MO CUA", relay bật; log "Mở từ xa" kèm lý do |
-| Bấm nút xanh "Nut mo cua trong" | Cửa mở; log "Nút trong" |
-| Tắt Wokwi, đợi 10 giây | Dashboard chuyển thiết bị sang **Offline**; bấm Mở cửa báo lỗi 409 |
+| Bấm nút mở cửa phía trong | Cửa mở; log "Nút trong" |
+| Rút nguồn ESP32, đợi 10 giây | Dashboard chuyển thiết bị sang **Offline**; bấm Mở cửa báo lỗi 409 |
 | Đưa ảnh điện thoại của chủ thẻ vào webcam | Bị từ chối (`spoof_pad` hoặc `challenge_failed`); trang Cảnh báo hiện ảnh nghi phạm |
 
-Hai nút "Mat la" / "Mat hop le" trong sơ đồ Wokwi **không còn dùng** (trước đây dùng để giả lập camera). Mọi quyết định mở cửa giờ do backend đưa ra.
 
 ---
 
@@ -152,7 +152,7 @@ Chi tiết quan trọng:
 - **Kiểm tra lại lúc mở cửa:** nếu admin khóa tài khoản trong lúc đang quét mặt, kết quả `granted` của AI bị đổi thành `denied/account_suspended`.
 - **Chống ghi trùng:** `/access/verify` nhận trùng `session_id` thì bỏ qua, AI có gửi lại cũng không sao.
 - **Nghi giả mạo** (`spoof_pad`, `challenge_failed`, `face_mismatch`) → tạo `Alert` kèm ảnh chụp; admin xem ở trang Cảnh báo.
-- ESP32 tự hết giờ sau 17 giây; khi rời bước quét mặt mà chưa có kết luận, nó gọi `/access/session/{id}/cancel` để backend báo AI hủy phiên.
+- ESP32 tự hết giờ sau 31 giây; khi rời bước quét mặt mà chưa có kết luận, nó gọi `/access/session/{id}/cancel` để backend báo AI hủy phiên.
 
 **Người dùng biết phải làm gì bằng cách nào (triển khai thật).** Người đứng trước cửa chỉ nhìn thấy màn hình **OLED**, không thấy máy chủ AI. Hướng dẫn đi theo đường: AI → `GET /access/session/{id}` (backend lấy từ AI `/status`) → ESP32 poll mỗi 500 ms → OLED. Dòng chữ TO là việc cần làm ngay:
 
@@ -184,11 +184,25 @@ Trình duyệt ── PUT /users/{id}/face (3-8 ảnh) ──► Backend ── 
 Cần ít nhất `LAB_MIN_FACE_IMAGES` (mặc định 3) ảnh hợp lệ. Ảnh lỗi trả về kèm lý do tiếng Việt để người dùng chụp lại.
 Admin đăng ký cho bất kỳ ai ở trang chi tiết người dùng; sinh viên tự đăng ký ở trang **Hồ sơ của tôi** (chụp bằng webcam trình duyệt hoặc chọn file).
 
+**Quét có hướng dẫn (trang Người dùng → Thêm người dùng mới).** Thay vì bấm chụp từng ảnh, trang làm như đăng ký ngân hàng: camera hình tròn, vòng tiến độ 4 chặng, hướng dẫn lần lượt **nhìn thẳng → quay đầu sang trái → quay đầu sang phải → chớp mắt**. Hệ thống tự chụp khi bạn làm đúng.
+
+```
+Trình duyệt ── mỗi ~0,1 giây một khung ──► POST /face/guide/frame ──► Backend ──► AI /api/ai/enroll/frame
+     ▲                                                                              │ kiểm tra chất lượng + chống ảnh giả + tư thế đầu
+     └──────── bước hiện tại, gợi ý, passed_step (khung nào vừa xong bước nào) ◄─────┘
+Đủ các bước ── "Thêm người dùng" ──► POST /users/enroll (các ảnh đã giữ) ──► AI /embed kiểm tra lại từng ảnh ──► trung bình vector
+```
+
+- Quay trái/phải và chớp mắt dùng chung thước đo và ngưỡng với thách thức người thật ở cửa (`ai_service/liveness.py`); mốc "nhìn thẳng" đo ở bước 1 làm gốc cho hai bước quay.
+- Mỗi bước có 15 giây (`AI_ENROLL_STEP_TIMEOUT_S`); hết giờ thì có nút **Thử lại bước này**. Riêng bước chớp mắt có nút **Bỏ qua** khi camera quá chậm.
+- AI phải đang chạy; không thì trang báo "AI Service chưa chạy" kèm cách bật. Backend chạy trong Docker cần `LAB_AI_BASE_URL=http://host.docker.internal:5050` (xem `.env` ở thư mục gốc).
+- Hiệu chỉnh trên webcam của bạn: chạy AI với `AI_ENROLL_DEBUG=1`, quét thử rồi xem các dòng `[ENROLL] ... offset=... ear=...` (offset là độ lệch mũi khi quay đầu, ear là độ mở mắt). Các biến `AI_ENROLL_FRONT_OFFSET`, `AI_ENROLL_FRONT_HOLD_S`, `AI_ENROLL_MIN_WIDTH_RATIO`, `AI_ENROLL_WRONG_WAY_S`, `AI_ENROLL_STEP_TIMEOUT_S` chỉnh ngưỡng của riêng bước đăng ký.
+
 ---
 
 ## 4. Điều khiển thiết bị từ web
 
-Web không gọi được trực tiếp vào ESP32 (nó nằm sau NAT/Wokwi), nên dùng mô hình **thiết bị hỏi thăm** (heartbeat):
+Web không gọi được trực tiếp vào ESP32 (nó nằm sau NAT), nên dùng mô hình **thiết bị hỏi thăm** (heartbeat):
 
 ```
 ESP32 ── POST /device/heartbeat {state, relay, rssi, uptime, ip, tries} ──► Backend   (mỗi 3 giây)
@@ -379,7 +393,7 @@ Trang web: `/login`, `/dashboard`, `/users`, `/users/{id}`, `/alerts`, `/reports
 | `LAB_SECRET_KEY` | khóa dev | Khóa ký JWT, **phải đổi khi triển khai** (≥ 32 ký tự) |
 | `LAB_SERVICE_TOKEN` | `dev-service-token` | AI Service dùng khi gọi backend |
 | `LAB_DEVICE_TOKEN` | `dev-device-token` | ESP32 dùng khi gọi backend |
-| `LAB_AI_BASE_URL` | `http://localhost:5050` | Địa chỉ AI Service |
+| `LAB_AI_BASE_URL` | `http://127.0.0.1:5050` | Địa chỉ AI Service. Dùng `127.0.0.1`, đừng dùng `localhost`: trên Windows `localhost` thử IPv6 trước và mỗi lần gọi AI chậm thêm ~2 giây (đo thật: 28 ms so với 2187 ms mỗi khung hình) |
 | `LAB_DEFAULT_DEVICE_ID` | `door-esp32-01` | Thiết bị nhận lệnh `emergency-open` |
 | `LAB_UNLOCK_MS` | `5000` | Thời gian mở khóa khi admin mở từ xa |
 | `LAB_DEVICE_OFFLINE_AFTER_S` | `10` | Quá ngần này giây không heartbeat = offline |
@@ -395,7 +409,7 @@ Trang web: `/login`, `/dashboard`, `/users`, `/users/{id}`, `/alerts`, `/reports
 | `LAB_SMTP_HOST`, `_PORT` (587), `_STARTTLS` (true), `_USER`, `_PASSWORD`, `_FROM`, `_TO` | trống | Bật kênh Email khi có `HOST` và `TO` (và `FROM` hoặc `USER`); `TO` nhiều người ngăn cách bằng dấu phẩy |
 | `LAB_EXPORT_MAX_ROWS` | `200000` | Số dòng tối đa khi xuất nhật ký CSV |
 
-Phía AI Service: `AI_BACKEND_EVENT_URL`, `AI_SERVICE_TOKEN` (xem bước 3). Phía firmware: `BACKEND_URL`, `DEVICE_ID`, `DEVICE_TOKEN` ở đầu `Iot/wokwi/src/main.cpp`.
+Phía AI Service: `AI_BACKEND_EVENT_URL`, `AI_SERVICE_TOKEN` (xem bước 3). Phía firmware: `BACKEND_URL`, `DEVICE_ID`, `DEVICE_TOKEN` trong `Iot/firmware/include/config.h` (hoặc `config_local.h`, không lên git).
 
 ---
 
@@ -406,9 +420,9 @@ cd Iot/backend
 python -m pytest -q
 ```
 
-62 test, dùng DB tạm và AI giả, không cần webcam hay Wokwi. Bao phủ: phân quyền admin/sinh viên, đăng ký mặt (cả đăng ký trực tiếp bằng webcam), toàn bộ luồng quẹt thẻ → AI → mở cửa, các lý do từ chối, cảnh báo giả mạo, chống ghi trùng phiên, heartbeat, lệnh từ xa (giao một lần, offline, lý do ngắn); **thông báo** (chuông web, con trỏ `after`, chuyển trạng thái thiết bị, Telegram và Email bằng giả lập: mức tối thiểu, chống lặp, lỗi mạng không làm hỏng request, che token); **báo cáo** (đếm theo ngày / giờ địa phương và đúng ở hai biên ngày, CSV có BOM và chống injection, Excel, phân trang cảnh báo, ghi chú xử lý, migration cột). Test không bao giờ gửi tin thật dù `.env` có token.
+83 test, dùng DB tạm và AI giả, không cần webcam hay ESP32. Bao phủ: phân quyền admin/sinh viên, đăng ký mặt (cả đăng ký trực tiếp bằng webcam), toàn bộ luồng quẹt thẻ → AI → mở cửa, các lý do từ chối, cảnh báo giả mạo, chống ghi trùng phiên, heartbeat, lệnh từ xa (giao một lần, offline, lý do ngắn); **thông báo** (chuông web, con trỏ `after`, chuyển trạng thái thiết bị, Telegram và Email bằng giả lập: mức tối thiểu, chống lặp, lỗi mạng không làm hỏng request, che token); **báo cáo** (đếm theo ngày / giờ địa phương và đúng ở hai biên ngày, CSV có BOM và chống injection, Excel, phân trang cảnh báo, ghi chú xử lý, migration cột). Test không bao giờ gửi tin thật dù `.env` có token.
 
-**Chưa kiểm thử được tự động:** gửi tin tới Telegram / Email thật (chỉ kiểm thử bằng giả lập; hãy dùng nút "Gửi thông báo thử" trên Tổng quan để xác nhận cấu hình của bạn), và chạy firmware trong Wokwi / AI với webcam thật. Firmware đã biên dịch thành công (`pio run`) nhưng cần bạn chạy mô phỏng để xác nhận cuối cùng.
+**Chưa kiểm thử được tự động:** gửi tin tới Telegram / Email thật (chỉ kiểm thử bằng giả lập; hãy dùng nút "Gửi thông báo thử" trên Tổng quan để xác nhận cấu hình của bạn), và chạy firmware / AI với phần cứng và webcam thật. Firmware biên dịch được (`pio run`) và đã thử một phần trên mạch (camera, RC522 đọc chip, WiFi + backend); OLED chưa lên, quẹt thẻ / relay / khóa chưa thử.
 
 ---
 
@@ -416,15 +430,15 @@ python -m pytest -q
 
 | Hiện tượng | Nguyên nhân thường gặp |
 |---|---|
-| Serial Monitor in `[WIFI] That bai` | Wokwi chưa nối mạng; kiểm tra extension Wokwi và quyền dùng gateway |
+| Serial Monitor in `[WIFI] That bai` | Sai tên / mật khẩu WiFi, hoặc WiFi 5 GHz (ESP32 chỉ bắt được 2,4 GHz) |
 | Dashboard không thấy thiết bị | Backend chưa chạy với `--host 0.0.0.0`; sai `BACKEND_URL`; tường lửa chặn cổng 8080 |
 | OLED hiện "LOI TOKEN" | `DEVICE_TOKEN` trong firmware khác `LAB_DEVICE_TOKEN` |
 | Quẹt thẻ luôn "AI khong san sang" | AI Service chưa chạy hoặc `LAB_AI_BASE_URL` sai (kiểm tra http://localhost:5050/api/ai/health) |
 | Quét mặt xong cửa không mở, web không có log | AI chưa đặt `AI_BACKEND_EVENT_URL` / `AI_SERVICE_TOKEN` đúng, backend trả 401 |
-| "Thiết bị đang offline" khi mở từ xa | Chưa có heartbeat trong 10 giây gần nhất: Wokwi đang dừng hoặc mất mạng |
+| "Thiết bị đang offline" khi mở từ xa | Chưa có heartbeat trong 10 giây gần nhất: ESP32 mất nguồn hoặc mất WiFi |
 | Bật camera trên web báo "device in use" / AI báo `can't grab frame` | Hai chương trình tranh nhau một webcam. AI Service chỉ mở camera khi có phiên quét mặt (đặt `AI_KEEP_CAMERA_OPEN=1` để giữ mở suốt). Bấm **Tắt camera** trên web trước khi quẹt thẻ; chạy lại AI Service sau khi sửa |
-| Nhập mã thẻ trên Wokwi bị "The la" dù đã tạo thẻ | Xem dòng `[CARD] uid=...` trong Serial Monitor: UID gửi đi phải trùng chính xác UID trong web. Keypad chỉ có `0-9` và `A-D` (không có chữ khác), tối đa 12 ký tự. Backend tự đổi UID sang chữ HOA khi so khớp |
-| ESP32 "Het thoi gian quet mat" sau 17 giây, web chỉ có dòng `Quẹt thẻ / Đang xác thực`, không có `Quét mặt` | Kết quả của AI không tới backend. Xem console AI: cảnh báo `Chưa đặt AI_BACKEND_EVENT_URL` hoặc `Backend từ chối ... HTTP 401` (sai token). Dùng `start_ai.ps1` |
+| Quẹt thẻ bị "The la" dù đã tạo thẻ | Xem dòng `[CARD] uid=...` trong Serial Monitor: UID gửi đi phải trùng chính xác UID trong web (chuỗi hex, ví dụ `04A1B2C3`). Backend tự đổi UID sang chữ HOA khi so khớp |
+| ESP32 "Het thoi gian quet mat" sau 31 giây, web chỉ có dòng `Quẹt thẻ / Đang xác thực`, không có `Quét mặt` | Kết quả của AI không tới backend. Xem console AI: cảnh báo `Chưa đặt AI_BACKEND_EVENT_URL` hoặc `Backend từ chối ... HTTP 401` (sai token). Dùng `start_ai.ps1` |
 | Quét mặt "đơ", chớp mắt mãi không qua | AI xử lý quá chậm nên bỏ lỡ cú chớp (~0,2 giây). Đã tối ưu: giới hạn 4 luồng ONNX (`AI_ORT_THREADS`), bộ phát hiện cỡ 320 (`AI_DET_SIZE`), đọc camera ở luồng riêng; đo được ~3,7 khung hình/giây (trước đó ~0,3). Xem fps/giá trị đo trên cửa sổ camera; nếu vẫn không qua, nới `AI_BLINK_CLOSE_RATIO` (mặc định 0.70, thử 0.80) |
 | Web ghi `challenge_failed` dù độ khớp cao (0.8+) | Không làm được thách thức quay đầu/chớp mắt. Cửa sổ camera hiện kiểu **soi gương** (phải của bạn ở bên phải màn hình). Ngưỡng mặc định đã hiệu chỉnh theo số đo thật trên webcam (chớp mắt 0.88/0.93, quay đầu 0.15). Camera hoặc gương mặt khác thì chạy `python tools/calibrate_liveness.py` trong `ai_service`, rồi đặt các biến `AI_*` nó đề xuất (số đo thô lưu ở `tools/calibration_last.csv`). Test: `python -m pytest tests -q` trong `ai_service`. Console AI in `[PERF] ... fps` sau mỗi phiên; dưới 2 fps là quá chậm |
 | Đăng ký mặt báo `spoof_suspected` | Ảnh chụp từ màn hình hoặc ảnh in; chụp trực tiếp bằng webcam |

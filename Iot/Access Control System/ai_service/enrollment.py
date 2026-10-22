@@ -43,33 +43,46 @@ def sharpness(img, bbox):
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
-def analyze_image(face_app, pad, img, min_face_width, pad_threshold, min_sharpness):
-    """Trả dict {ok, reason, embedding?, face_width, det_score, sharpness, pad_score}.
+def inspect_image(face_app, pad, img, min_face_width, pad_threshold, min_sharpness):
+    """Kiểm tra chất lượng một ảnh. Trả (kết quả, khuôn mặt); KHÔNG kèm vector.
 
+    kết quả: dict {ok, reason, face_width, det_score, sharpness, pad_score} (chỉ {ok, reason} khi chưa có đúng một mặt).
     reason: ok | no_face | multiple_faces | low_quality (mặt nhỏ / detector kém tự tin) | blurry | spoof_suspected
+    khuôn mặt: đối tượng insightface (landmark, bbox...) khi có đúng một mặt, ngược lại None. Có cả khi ảnh không đạt
+    chất lượng, để bên gọi (quét có hướng dẫn) vẫn đọc được tư thế đầu.
     """
     faces = face_app.get(img)
     if len(faces) == 0:
-        return {"ok": False, "reason": "no_face"}
-    if len(faces) > 1:
-        return {"ok": False, "reason": "multiple_faces"}
-    f = faces[0]
+        return {"ok": False, "reason": "no_face"}, None
+    # Chỉ tính người thật sự đứng trong khung: bỏ phát hiện nhỏ / kém tự tin ở nền (ảnh treo tường, hình in, bóng người xa)
+    near = [x for x in faces if (x.bbox[2] - x.bbox[0]) >= min_face_width * 0.5 and x.det_score >= MIN_DET_SCORE]
+    if len(near) > 1:
+        return {"ok": False, "reason": "multiple_faces"}, None
+    f = near[0] if near else max(faces, key=lambda x: x.bbox[2] - x.bbox[0])
     width = float(f.bbox[2] - f.bbox[0])
     sharp = sharpness(img, f.bbox)
     base = {"face_width": round(width, 1), "det_score": round(float(f.det_score), 3), "sharpness": round(sharp, 1),
             "pad_score": None}
     if width < min_face_width * 0.75 or f.det_score < MIN_DET_SCORE:
-        return {"ok": False, "reason": "low_quality", **base}
+        return {"ok": False, "reason": "low_quality", **base}, f
     if sharp < min_sharpness:
-        return {"ok": False, "reason": "blurry", **base}
+        return {"ok": False, "reason": "blurry", **base}, f
     if pad is not None and pad.enabled:
         score = pad.score(img, f.bbox)
         base["pad_score"] = round(score, 3)
         if score < pad_threshold:
-            return {"ok": False, "reason": "spoof_suspected", **base}
-    emb = np.asarray(f.normed_embedding, dtype=np.float32)
-    assert emb.shape == (EMBEDDING_DIM,), emb.shape
-    return {"ok": True, "reason": "ok", "embedding": [round(float(v), 6) for v in emb], **base}
+            return {"ok": False, "reason": "spoof_suspected", **base}, f
+    return {"ok": True, "reason": "ok", **base}, f
+
+
+def analyze_image(face_app, pad, img, min_face_width, pad_threshold, min_sharpness):
+    """Như inspect_image nhưng khi ảnh đạt thì kèm "embedding" (vector 512 chiều đã chuẩn hóa L2)."""
+    res, face = inspect_image(face_app, pad, img, min_face_width, pad_threshold, min_sharpness)
+    if res["ok"]:
+        emb = np.asarray(face.normed_embedding, dtype=np.float32)
+        assert emb.shape == (EMBEDDING_DIM,), emb.shape
+        res["embedding"] = [round(float(v), 6) for v in emb]
+    return res
 
 
 def enroll_faces():
