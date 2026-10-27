@@ -214,6 +214,8 @@ cd ai_service
 
 ## E. Kết nối ThingsBoard (tùy chọn)
 
+> Hướng dẫn đầy đủ để cả nhóm dựng dashboard, cảnh báo và chia sẻ: **`docs/HUONG_DAN_THINGSBOARD.md`**. Mục này chỉ là bản tóm tắt cho AI Service.
+
 **Hiện có gì:** AI Service tự đẩy một bản tin lên ThingsBoard mỗi khi một phiên quét mặt kết thúc (qua HTTP, cổng thiết bị của ThingsBoard). ESP32 chưa gửi gì lên ThingsBoard: nó chỉ nói chuyện với backend; phần ESP32 → ThingsBoard mới là đề xuất (`docs/api-spec.md`, luồng 6).
 
 ### E.1. Có một máy chủ ThingsBoard (chọn một)
