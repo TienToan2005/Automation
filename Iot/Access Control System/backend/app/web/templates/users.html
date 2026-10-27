@@ -67,7 +67,7 @@ async function load() {
     <td>${u.role === "admin" ? "Admin" : "Sinh viên"}</td>
     <td>${u.status === "active" ? '<span class="badge ok">Hoạt động</span>' : '<span class="badge bad">Bị khóa</span>'}</td>
     <td>${u.has_face ? '<span class="badge ok">Đã đăng ký</span>' : '<span class="badge warn">Chưa có</span>'}</td>
-    <td>${u.cards.map(c => esc(c.uid) + (c.status === "revoked" ? " (thu hồi)" : "")).join(", ")}</td>
+    <td>${u.cards.map(c => esc(c.uid) + ({ active: "", temporarily_locked: " (tạm khóa)", expired: " (hết hạn)", disabled: " (vô hiệu)", revoked: " (thu hồi)" }[c.effective_status] || "")).join(", ")}</td>
     <td><a class="btn small" href="/users/${u.id}">Chi tiết</a></td></tr>`).join("");
 }
 setupGuidedEnroll(document.getElementById("f"), {{ MIN_FACE_IMAGES }}, load);

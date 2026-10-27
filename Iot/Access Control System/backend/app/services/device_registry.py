@@ -39,11 +39,14 @@ class DeviceRegistry:
             else:
                 prev_state = dev.hb.state
                 was_offline = dev.offline_notified or now - dev.last_seen > settings.device_offline_after_s
+            prev_relay = 0 if prev_state == "" else dev.hb.relay
             if events is not None:
                 if was_offline:
                     events.append("online")
                 if hb.state == "LOCKOUT" and prev_state != "LOCKOUT":
                     events.append("lockout")
+                if hb.relay != prev_relay:     # relay thật sự đóng / nhả (khác với "xác thực thành công")
+                    events.append("door_unlocked" if hb.relay else "door_locked")
             dev.hb, dev.last_seen, dev.offline_notified = hb, now, False
             pending = [cmd for expires, cmd in dev.commands if expires > now]
             dev.commands.clear()

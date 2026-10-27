@@ -118,8 +118,12 @@
 #define CAM_STREAM_PORT 81             // AI đọc http://<ip>:81/stream ; trang xem thử http://<ip>/ ; ảnh tĩnh http://<ip>/capture
 
 // ---------- 6. Thời gian ----------
-#define MAX_TRIES 3                   // sai quá số lần này thì khóa tạm
-#define LOCKOUT_MS 15000
+#define EXIT_RELEASE_MS 100           // nút trong phải nhả (mức cao) ngần này ms mới nhận lần bấm kế tiếp (chống giữ nút / chân kẹt thấp mở cửa lặp)
+#define EXIT_MIN_INTERVAL_MS 1500     // khoảng cách tối thiểu giữa hai lần mở bằng nút trong
+#define EXIT_STUCK_MS 3000            // giữ thấp quá ngần này ms thì báo "kẹt nút" một lần (không mở thêm)
+#define MAX_TRIES 3                   // số lần sai LIÊN TIẾP (thẻ sai: lạ / thu hồi / vô hiệu / hết hạn; hoặc giả mạo / không qua thử thách) thì khóa cửa LOCKOUT_MS; 0 = tắt
+#define FAIL_WINDOW_MS 120000         // chỉ tính các lần sai trong khoảng này (lần cũ hơn thì đếm lại từ đầu)
+#define LOCKOUT_MS 15000              // khóa cửa ngắn chống thử liên tục. Khóa THẺ (5/15/30 phút) do backend quản lý, bền vững khi khởi động lại
 #define FACE_TIMEOUT_MS 31000         // phải lớn hơn AI_SCAN_TIMEOUT_S (30 giây) của AI Service
 #define POLL_MS 500                  // chu kỳ hỏi backend kết quả quét mặt để cập nhật OLED (nhỏ hơn = OLED theo kịp cửa sổ AI hơn)
 #define HEARTBEAT_MS 3000

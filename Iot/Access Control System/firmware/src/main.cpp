@@ -34,6 +34,7 @@ MFRC522 rfid(PIN_RC522_SS, PIN_RC522_RST < 0 ? MFRC522::UNUSED_PIN : (byte)PIN_R
 bool rfidOk = false;
 unsigned long lastRfidCheck = 0;
 unsigned long lastCardAt = 0;
+unsigned long lastSecurityFailAt = 0;
 #endif
 
 enum State { WAIT_CARD, WAIT_FACE, UNLOCKED, LOCKOUT };
@@ -84,16 +85,36 @@ int httpCall(bool post, const String &path, const String &body, String &out, int
   return code;
 }
 
+// Thong bao ngan cho NGUOI DUNG: khong lo nguong / diem so / luat phat hien.
 const char *denyText(const char *reason) {
-  if (!strcmp(reason, "unknown_card")) return "The la";
+  if (!strcmp(reason, "unknown_card")) return "The khong hop le";
   if (!strcmp(reason, "card_revoked")) return "The bi thu hoi";
+  if (!strcmp(reason, "card_disabled")) return "The bi vo hieu";
+  if (!strcmp(reason, "card_expired")) return "The het han";
+  if (!strcmp(reason, "card_locked")) return "The tam khoa";
+  if (!strcmp(reason, "rate_limited")) return "Thao tac qua nhanh";
   if (!strcmp(reason, "account_suspended")) return "Tai khoan bi khoa";
   if (!strcmp(reason, "not_enrolled")) return "Chua dang ky mat";
-  if (!strcmp(reason, "ai_unavailable")) return "AI khong san sang";
+  if (!strcmp(reason, "ai_unavailable")) return "He thong ban, thu lai";
   if (!strcmp(reason, "face_mismatch")) return "Sai khuon mat";
-  if (!strcmp(reason, "spoof_pad")) return "Phat hien gia mao";
+  if (!strcmp(reason, "spoof_pad")) return "Khong xac thuc duoc";
   if (!strcmp(reason, "challenge_failed")) return "Khong qua thu thach";
+  if (!strcmp(reason, "face_not_detected")) return "Khong thay khuon mat";
+  if (!strcmp(reason, "face_quality_low")) return "Anh chua ro";
+  if (!strcmp(reason, "face_inconclusive")) return "Chua xac dinh duoc";
+  if (!strcmp(reason, "pad_uncertain")) return "Thu lai noi sang";
+  if (!strcmp(reason, "timeout")) return "Het thoi gian";
   return "Bi tu choi";
+}
+
+// Cac lan bi tu choi TINH vao so lan sai lien tiep cua cua (du MAX_TRIES lan thi khoa tam LOCKOUT_MS):
+//   - THE SAI: the la, thu hoi, vo hieu, het han;
+//   - bang chung an ninh khi quet mat: sai mat, gia mao, khong qua thu thach.
+// KHONG tinh: loi ky thuat (AI hong, mat mang), het gio, loi thu nhan (khong thay mat, anh kem), the dang bi khoa, quet qua nhanh.
+bool countsTowardLockout(const char *reason) {
+  return !strcmp(reason, "unknown_card") || !strcmp(reason, "card_revoked") || !strcmp(reason, "card_disabled") ||
+         !strcmp(reason, "card_expired") || !strcmp(reason, "face_mismatch") || !strcmp(reason, "spoof_pad") ||
+         !strcmp(reason, "challenge_failed");
 }
 
 // ---------------- OLED ----------------
@@ -149,6 +170,12 @@ void showState() {
     } else if (hintCode == "no_face") {
       big = "KHONG THAY";
       l2 = "Dung truoc camera";
+    } else if (hintCode == "quality_low") {
+      big = "ANH KEM";
+      l2 = "Them sang, dung gan hon";
+    } else if (hintCode == "mismatch") {
+      big = "SAI MAT";
+      l2 = "Nhin thang, thu lai";
     } else if (hintCode == "multiple_faces") {
       big = "1 NGUOI";
       l2 = "Chi 1 nguoi trong khung";
@@ -179,9 +206,11 @@ void cancelSession() {
 
 void setState(State s) {
   if (state == WAIT_FACE && s != WAIT_FACE) cancelSession();   // roi buoc quet mat khi chua co ket luan
+  bool relayChanged = (state == UNLOCKED) != (s == UNLOCKED);
   state = s;
   stateSince = millis();
   relaySet(s == UNLOCKED);
+  if (relayChanged) lastHeartbeat = 0;     // bao backend ngay (nhip tim ke tiep) de ghi su kien cua mo / dong thuc su
   if (s == UNLOCKED) {
     drawScreen("MO CUA");
     Serial.println("[LOCK] UNLOCKED");
@@ -197,14 +226,21 @@ void setState(State s) {
   }
 }
 
-// Mot lan xac thuc that bai: tinh vao so lan sai chung.
-void fail(const char *why) {
-  tries++;
-  Serial.printf("[AUTH] %s (%u/%u)\n", why, tries, MAX_TRIES);
-  if (tries >= MAX_TRIES) {
-    tries = 0;
-    setState(LOCKOUT);
-    return;
+// Mot lan bi tu choi. Chi cac ly do trong countsTowardLockout() moi tinh vao so lan sai (trong FAIL_WINDOW_MS gan day, thanh cong
+// thi dem lai tu dau). Khoa tam theo TUNG THE (5/15/30 phut) do backend quan ly, bo dem nam trong DB.
+void fail(const char *why, const char *reason = "") {
+  Serial.printf("[AUTH] %s (%s)\n", why, reason);
+  if (countsTowardLockout(reason)) {
+    unsigned long now = millis();
+    if (tries > 0 && now - lastSecurityFailAt > FAIL_WINDOW_MS) tries = 0;   // loi cu da qua cua so: dem lai tu dau
+    lastSecurityFailAt = now;
+    tries++;
+    Serial.printf("[AUTH] lan sai lien tiep %u/%u\n", tries, MAX_TRIES);
+    if (MAX_TRIES > 0 && tries >= MAX_TRIES) {
+      tries = 0;
+      setState(LOCKOUT);
+      return;
+    }
   }
   drawScreen("TU CHOI", why);
   delay(1500);
@@ -245,7 +281,7 @@ void submitCard(String uid) {
 
   JsonDocument doc;
   if (deserializeJson(doc, resp)) {
-    fail("Loi du lieu");
+    fail("Loi du lieu");              // loi ky thuat: khong tinh vao so lan sai
     return;
   }
   if (code == 202) {
@@ -259,7 +295,8 @@ void submitCard(String uid) {
     setState(WAIT_FACE);
     return;
   }
-  fail(denyText(doc["data"]["reason"] | ""));
+  const char *why = doc["data"]["reason"] | "";
+  fail(denyText(why), why);
 }
 
 // Hoi backend ket qua phien quet mat; cap nhat goi y len OLED.
@@ -278,10 +315,16 @@ void pollSession() {
     unlock(UNLOCK_MS);
   } else if (!strcmp(status, "denied")) {
     sessionId = "";
-    fail(denyText(doc["reason"] | ""));
+    const char *why = doc["reason"] | "";
+    fail(denyText(why), why);
   } else if (!strcmp(status, "timeout") || !strcmp(status, "cancelled")) {
+    const char *why = doc["reason"] | "";
     sessionId = "";
-    Serial.println("[AUTH] Het thoi gian quet mat");
+    Serial.printf("[AUTH] Phien quet mat ket thuc: %s (%s)\n", status, why);
+    if (!strcmp(status, "timeout")) {       // noi ro vi sao het gio (khong thay mat / anh kem / chua xac dinh...), khong tinh la sai
+      drawScreen("HET GIO", denyText(why));
+      delay(1500);
+    }
     setState(WAIT_CARD);
   } else {
     hintCode = String((const char *)(doc["hint"] | ""));
@@ -533,6 +576,8 @@ void handleCommand(String line) {
     rfid.PCD_AntennaOff();
     Serial.println("[TEST] Da pha cau hinh RC522; trong 1 giay phai thay dong 'Mat cau hinh/anten ... da khoi dong lai chip'");
 #endif
+  } else if (low == "exit?") {                 // doc muc chan nut trong: 1 = nha (dung), 0 = dang bi nhan / ket thap
+    Serial.printf("[EXIT] GPIO %d = %d (1 = nha, 0 = nhan/ket thap)\n", PIN_EXIT, digitalRead(PIN_EXIT));
   } else if (low == "i2c") {
     i2cScan();
   } else if (low == "i2cfind") {
@@ -681,14 +726,44 @@ void loop() {
     }
 #endif
 #if USE_EXIT_BUTTON
-    if (pressed(PIN_EXIT)) {
-      delay(30);                                   // chong doi nut
-      if (pressed(PIN_EXIT)) {
+    // Theo CANH BAM, khong theo muc: phai NHA nut (muc cao on dinh) roi bam lai moi mo them. Neu theo muc, giu nut hoac chan 47
+    // bi ket / cham GND se tu mo cua lap di lap lai moi khi het UNLOCK_MS (da gap: moi ~5,5 giay mot lan mo).
+    static bool exitArmed = false;               // CHUA san sang cho toi khi thay chan o muc cao: chan dang thap luc khoi dong thi KHONG mo cua
+    static unsigned long exitHighSince = 0, exitLowSince = 0, lastExitAt = 0;
+    static bool exitStuckReported = false;
+    unsigned long tNow = millis();
+    {   // nhat ky chan doan: moi lan chan 47 doi muc on dinh >= 30 ms (de thay nut co thuc su nha / nhan, hay tiep diem lung lay)
+      static bool candidate = false, reported = false;
+      static unsigned long changeAt = 0;
+      bool nowPressed = pressed(PIN_EXIT);
+      if (nowPressed != candidate) {
+        candidate = nowPressed;
+        changeAt = tNow;
+      } else if (candidate != reported && tNow - changeAt >= 30) {
+        reported = candidate;
+        Serial.printf("[EXIT] chan %d: %s\n", PIN_EXIT, candidate ? "NHAN (thap)" : "NHA (cao)");
+      }
+    }
+    if (!pressed(PIN_EXIT)) {
+      if (exitHighSince == 0) exitHighSince = tNow;
+      if (tNow - exitHighSince >= EXIT_RELEASE_MS) exitArmed = true;   // da nha du lau: san sang cho lan bam moi
+      exitLowSince = 0;
+      exitStuckReported = false;
+    } else {
+      exitHighSince = 0;
+      if (exitLowSince == 0) exitLowSince = tNow;
+      if (exitArmed && tNow - exitLowSince >= 30 && tNow - lastExitAt >= EXIT_MIN_INTERVAL_MS) {   // chong doi nut 30 ms
+        exitArmed = false;
+        lastExitAt = tNow;
         Serial.println("[EXIT] Nut mo cua trong");
         String out;
         httpCall(true, "/api/v1/access/exit", String("{\"device_id\":\"") + DEVICE_ID + "\"}", out, 1000);
         unlock(UNLOCK_MS);
         return;
+      }
+      if (!exitStuckReported && tNow - exitLowSince >= EXIT_STUCK_MS) {
+        exitStuckReported = true;                  // giu qua lau / chan ket thap: bao mot lan, khong mo them
+        Serial.println("[EXIT] CANH BAO: chan nut trong luon o muc thap (ket nut, day cham GND hoac dang giu). Khong mo them.");
       }
     }
 #endif
