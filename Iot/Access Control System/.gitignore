@@ -1,1 +1,8 @@
 .env
+
+.playwright-mcp/
+.pio/
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/

@@ -196,3 +196,21 @@ def test_timeout_helper_reads_the_session_context(env):
     ctx = env[3]
     ctx.faces_seen, ctx.quality_low = 8, 8
     assert main.timeout_reason(ctx) == "face_quality_low"
+
+
+# ----------------------------------- cửa sổ camera không được sập vì một gợi ý lạ -----------------------------------
+HINTS_PRODUCED = ("no_face", "move_closer", "multiple_faces", "quality_low", "mismatch")
+
+
+@pytest.mark.parametrize("hint", HINTS_PRODUCED + ("gợi ý chưa từng có",))
+def test_overlay_renders_every_hint_without_crashing(env, hint):
+    with main.state_lock:
+        main.ai_state.update(hint=hint, challenge=None)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    main.draw_overlay(frame, [], "", 5.0)            # trước đây: KeyError: 'mismatch' làm chết cả AI Service
+    assert frame.any(), "phải vẽ được chữ lên khung hình"
+
+
+def test_every_hint_the_pipeline_can_set_has_a_display_text():
+    for hint in HINTS_PRODUCED:
+        assert hint in main.HINT_TEXT

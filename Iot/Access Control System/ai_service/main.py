@@ -219,7 +219,7 @@ def publish_event(event):
     except queue.Full:
         print("[EVENT] Hàng đợi đầy, bỏ sự kiện", event["session_id"])
 
-ALERT_LEVEL = {"spoof_pad": "high", "challenge_failed": "high", "face_mismatch": "medium"}
+ALERT_LEVEL = {"spoof_pad": "high", "challenge_failed": "medium", "face_mismatch": "medium"}   # khớp mức của backend: chỉ PAD chắc chắn mới là HIGH
 ALERT_MESSAGE = {
     "spoof_pad": "Phát hiện giả mạo khuôn mặt (ảnh in / ảnh hoặc video trên màn hình)",
     "challenge_failed": "Khuôn mặt đúng nhưng không thực hiện được thách thức người thật (nghi ảnh tĩnh)",
@@ -650,6 +650,11 @@ def result_banner(img):
     cv2.putText(img, lines[0], (20, 55), cv2.FONT_HERSHEY_SIMPLEX, 1.6, color, 3)
     cv2.putText(img, lines[1], (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
+# Chữ hiển thị trên cửa sổ camera cho mỗi gợi ý (hint) mà process_frame có thể đặt. Thêm gợi ý mới thì thêm ở đây.
+HINT_TEXT = {"no_face": "KHONG THAY MAT", "move_closer": "LAI GAN HON", "multiple_faces": "CHI 1 NGUOI TRONG KHUNG",
+             "quality_low": "ANH KEM: THEM SANG", "mismatch": "SAI KHUON MAT: THU LAI"}
+
+
 def draw_overlay(frame, drawn, debug, fps=0.0):
     # Hiển thị kiểu soi gương: "phải" của người dùng nằm bên phải màn hình, đúng với chữ "QUAY DAU SANG PHAI".
     # Chỉ lật hình để hiển thị; việc phân tích luôn dùng khung hình gốc.
@@ -669,8 +674,7 @@ def draw_overlay(frame, drawn, debug, fps=0.0):
     if s["challenge"]:
         cv2.putText(frame, s["challenge"]["text"], (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 255), 3)
     elif s["hint"]:
-        cv2.putText(frame, {"no_face": "KHONG THAY MAT", "move_closer": "LAI GAN HON",
-                            "multiple_faces": "CHI 1 NGUOI TRONG KHUNG"}[s["hint"]], (20, 110),
+        cv2.putText(frame, HINT_TEXT.get(s["hint"], str(s["hint"]).upper()), (20, 110),    # gợi ý lạ vẫn vẽ được, không bao giờ sập
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 200, 255), 2)
     if debug:
         cv2.putText(frame, debug, (20, frame.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
@@ -905,7 +909,12 @@ def main():
             n_frames += 1
             if SHOW_WINDOW:
                 fps = n_frames / max(time.time() - t_first, 1e-6) if n_frames > 1 else 0.0
-                draw_overlay(frame, drawn, debug, fps)
+                try:
+                    draw_overlay(frame, drawn, debug, fps)
+                except Exception as e:      # chỉ là phần HIỂN THỊ: lỗi vẽ không được làm chết dịch vụ xác thực
+                    if not getattr(main, "_overlay_error_shown", False):
+                        print(f"[CẢNH BÁO] Lỗi vẽ cửa sổ camera (bỏ qua, nhận diện vẫn chạy): {type(e).__name__}: {e}")
+                        main._overlay_error_shown = True
                 cv2.imshow('Lab 2FA System', frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
